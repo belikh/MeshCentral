@@ -15,6 +15,7 @@
 "use strict";
 
 const agentSessions = require('./agent-session-registry.js');
+const agentEnrolmentPolicy = require('./agent-enrolment-policy.js');
 
 // Construct a MeshAgent object, called upon connection
 module.exports.CreateMeshAgent = function (parent, db, ws, req, args, domain) {
@@ -748,9 +749,17 @@ module.exports.CreateMeshAgent = function (parent, db, ws, req, args, domain) {
         db.Get(obj.dbNodeKey, function (err, nodes) {
             if (obj.agentInfo == null) { return; }
             var device, mesh;
+            const nodeExists = ((nodes != null) && (nodes.length > 0));
+
+            // New nodes must come from an address the enrolment policy allows, existing nodes are unaffected
+            if (agentEnrolmentPolicy.isNewAgentAllowed(obj.remoteaddr, nodeExists, parent.parent.config.settings.agentallowedipnewagents, domain.agentallowedipnewagents, function (msg) { parent.parent.debug('agent', msg); console.log(msg); }) == false) {
+                parent.blockedAgents++;
+                parent.parent.debug('agent', 'New agent from blocked IP address ' + obj.remoteaddr + ', holding connection.');
+                return;
+            }
 
             // See if this node exists in the database
-            if ((nodes == null) || (nodes.length == 0)) {
+            if (nodeExists == false) {
                 // This device does not exist, use the meshid given by the device
 
                 // Check if we already have too many devices for this domain
