@@ -17,16 +17,18 @@
  *
  * The fake device records the input commands it receives and swaps its screen
  * when the click lands, so the test proves the second snapshot changed because
- * of the input, with no live agent. A session cache (a sibling ticket) lets
- * step 2 reuse step 1's relay session; without one, each call negotiates its
- * own session and releases it again.
+ * of the input, with no live agent. Snapshot calls negotiate their own relay
+ * session and release it; the cache-backed frames and input tools are what
+ * share one session.
  */
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 
 const { createToolRegistry } = require('../mcp-tool-registry.js');
-const { registerDesktopTools, desktopInput } = require('../mcp-desktop-tools.js');
+const { registerDesktopTools, desktopInput, applyDesktopActions } = require('../mcp-desktop-tools.js');
+const { createDesktopSessionCache } = require('../desktop-session-cache.js');
 const { AuthError, RelayError } = require('../meshcentral-client.js');
 const {
     DesktopCaptureError,
@@ -87,6 +89,7 @@ function createFakes(state) {
             },
             sendCommand(buffer) {
                 this.sent.push(buffer);
+                if (this.closed > 0) { return false; }
                 if (state.sendError != null) { throw state.sendError; }
                 return (state.sendResult !== undefined) ? state.sendResult : true;
             },
@@ -101,13 +104,20 @@ function createFakes(state) {
 function createHarness(state, registration) {
     const fakes = createFakes(state);
     const records = [];
+    const lifecycle = new EventEmitter();
+    const cache = createDesktopSessionCache({
+        client: fakes.client,
+        createCapture: fakes.factory,
+        idleTimeout: ((state != null) && (state.idleTimeout != null)) ? state.idleTimeout : 30000,
+        lifecycle: lifecycle
+    });
     const registry = createToolRegistry({ onInvocation: (record) => records.push(record) });
-    registerDesktopTools(registry, Object.assign({ client: fakes.client, createCapture: fakes.factory }, registration || {}));
-    return Object.assign(fakes, { registry, records });
+    registerDesktopTools(registry, Object.assign({ client: fakes.client, createCapture: fakes.factory, cache: cache }, registration || {}));
+    return Object.assign(fakes, { registry, records, cache, lifecycle });
 }
 
 test('mesh_desktop_input applies a mixed action list in order', async () => {
-    const { registry, records, launches, captures, sessions } = createHarness();
+    const { registry, records, launches, captures, sessions, cache } = createHarness();
 
     const result = await registry.call('mesh_desktop_input', {
         deviceid: NODE_ID,
@@ -138,14 +148,16 @@ test('mesh_desktop_input applies a mixed action list in order', async () => {
 
     assert.deepEqual(launches, [{ nodeid: NODE_ID, options: {} }]);
     assert.equal(captures[0].started, 1);
-    assert.equal(captures[0].closed, 1);
-    assert.equal(sessions[0].released, 1);
+    assert.equal(captures[0].closed, 0);
+    assert.equal(sessions[0].released, 0);
+    assert.equal(cache.size, 1);
 
     assert.equal(records.length, 1);
     assert.equal(records[0].tool, 'mesh_desktop_input');
     assert.equal(records[0].target, NODE_ID);
     assert.equal(records[0].outcome, 'ok');
     assert.equal(records[0].reason, null);
+    await cache.closeAll();
 });
 
 test('mesh_desktop_input separates press and release with the step delay', async () => {
@@ -313,6 +325,104 @@ test('mesh_desktop_input surfaces a closed session when sending', async () => {
     assert.equal(captures[0].closed, 1);
     assert.equal(records[0].outcome, 'error');
     assert.equal(records[0].reason, 'The desktop relay session is closed');
+});
+
+test('an idle eviction cannot cut an input sequence short', async () => {
+    const { registry, launches, captures, sessions, cache } = createHarness({ idleTimeout: 25, latestFrame: FRAME_1024 });
+
+    const seeded = await cache.acquire(NODE_ID);
+    cache.finish(seeded);
+    assert.equal(cache.size, 1);
+
+    const result = await registry.call('mesh_desktop_input', {
+        deviceid: NODE_ID,
+        actions: [{ type: 'text', text: 'abcdefghij' }]
+    });
+
+    assert.equal(result.isError, undefined);
+    assert.equal(captures[0].sent.length, 20);
+    assert.equal(sessions[0].released, 0);
+    assert.equal(captures[0].closed, 0);
+    assert.equal(cache.size, 1);
+
+    const again = await registry.call('mesh_desktop_input', {
+        deviceid: NODE_ID,
+        actions: [{ type: 'key', key: 'Escape' }]
+    });
+
+    assert.equal(again.isError, undefined);
+    assert.equal(launches.length, 1);
+    assert.equal(captures.length, 1);
+    assert.equal(captures[0].sent.length, 22);
+    assert.equal(cache.size, 1);
+    await cache.closeAll();
+});
+
+test('applyDesktopActions extends the hold while the sequence runs', async () => {
+    const fakes = createFakes();
+    const capture = fakes.factory({ url: RELAY_URL });
+    let touches = 0;
+
+    const commands = await applyDesktopActions(capture, [{ type: 'key', key: 'Tab' }], {
+        frame: null,
+        sleep: () => Promise.resolve(),
+        touch: () => { touches++; }
+    });
+
+    assert.equal(commands, 2);
+    assert.equal(touches, 2);
+    assert.deepEqual(capture.sent, [encodeKey('down', 'Tab'), encodeKey('up', 'Tab')]);
+});
+
+test('the cached session is reused across a poll, input and poll loop', async () => {
+    const frame = Object.assign({ data: Buffer.from([0xFF, 0xD8, 0xFF, 0xD9]), mimeType: 'image/jpeg', index: 1 }, FRAME_1024);
+    const { registry, launches, captures, sessions, cache } = createHarness({ waitFrame: frame, latestFrame: FRAME_1024 });
+
+    const first = await registry.call('mesh_desktop_frames', { deviceid: NODE_ID, mode: 'poll' });
+    const input = await registry.call('mesh_desktop_input', {
+        deviceid: NODE_ID,
+        actions: [{ type: 'click', x: 512, y: 384 }]
+    });
+    const second = await registry.call('mesh_desktop_frames', { deviceid: NODE_ID, mode: 'poll' });
+
+    assert.equal(first.isError, undefined);
+    assert.equal(input.isError, undefined);
+    assert.equal(second.isError, undefined);
+    assert.equal(launches.length, 1);
+    assert.equal(captures.length, 1);
+    assert.equal(sessions[0].released, 0);
+    assert.equal(cache.size, 1);
+    assert.deepEqual(captures[0].sent, [
+        encodeMouseButton('left', true, 960, 540),
+        encodeMouseButton('left', false, 960, 540)
+    ]);
+    await cache.closeAll();
+});
+
+test('a failed input releases the cached entry and the next call renegotiates', async () => {
+    const state = { latestFrame: FRAME_1024, sendResult: false };
+    const { registry, launches, captures, sessions, cache } = createHarness(state);
+
+    const failed = await registry.call('mesh_desktop_input', {
+        deviceid: NODE_ID,
+        actions: [{ type: 'move', x: 0, y: 0 }]
+    });
+
+    assert.deepEqual(failed, { content: [{ type: 'text', text: 'The desktop relay session is closed' }], isError: true });
+    assert.equal(cache.size, 0);
+    assert.equal(sessions[0].released, 1);
+    assert.equal(captures[0].closed, 1);
+
+    state.sendResult = true;
+    const retried = await registry.call('mesh_desktop_input', {
+        deviceid: NODE_ID,
+        actions: [{ type: 'move', x: 0, y: 0 }]
+    });
+
+    assert.equal(retried.isError, undefined);
+    assert.equal(launches.length, 2);
+    assert.equal(cache.size, 1);
+    await cache.closeAll();
 });
 
 test('mesh_desktop_input validates its arguments through the registry', async () => {

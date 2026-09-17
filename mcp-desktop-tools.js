@@ -17,8 +17,9 @@
 * protocol knowledge; server denials are surfaced verbatim.
 *
 * The input tool applies an ordered list of mouse, keyboard and text actions to
-* a desktop session. It reuses a capture handed in by a session cache when one
-* exists and opens (and releases) a relay session otherwise. Coordinates are in
+* a desktop session. It acquires the session cache entry for the call so an
+* idle eviction cannot cut a long sequence short, and opens (and releases) a
+* relay session only when no session is cached. Coordinates are in
 * the pixel space of the latest frame from the same session and are scaled onto
 * the remote screen using that frame's screen metadata. Together the tools form
 * the look-act-look loop:
@@ -74,9 +75,10 @@ function formatFrameMetadata(frame) {
 }
 
 // When the relay reported a denial before closing, prefer its own words over
-// the generic transport message the viewer synthesised around them.
+// the generic transport message the viewer synthesised around them. Client
+// errors (authentication, launch denials) keep their actionable messages.
 function surfaceCaptureError(error) {
-    if ((error != null) && (typeof error.serverMessage === 'string') && (error.serverMessage.length > 0)) {
+    if ((error instanceof DesktopCaptureError) && (typeof error.serverMessage === 'string') && (error.serverMessage.length > 0)) {
         return new Error(error.serverMessage);
     }
     return error;
@@ -279,7 +281,8 @@ function encodeActionGroups(action, frame) {
 * number of protocol commands sent. The scaling frame is options.frame when
 * given, otherwise the capture's own latest frame. Commands inside a press and
 * release pair are separated by options.delay milliseconds, and options.sleep
-* can replace the real timer in tests.
+* can replace the real timer in tests. options.touch, when given, is called
+* before each command group so a cache entry can be held for a long sequence.
 */
 async function applyDesktopActions(capture, actions, options) {
     options = options || {};
@@ -293,6 +296,7 @@ async function applyDesktopActions(capture, actions, options) {
     for (const action of actions) {
         const groups = encodeActionGroups(action, frame);
         for (let i = 0; i < groups.length; i++) {
+            if (typeof options.touch === 'function') { options.touch(); }
             for (const command of groups[i]) {
                 if (capture.sendCommand(command) === false) {
                     throw new DesktopCaptureError('The desktop relay session is closed', 'E_CLOSED');
@@ -333,16 +337,29 @@ function confirmInput(count, deviceid) {
 * args.actions   Ordered validated actions (move, click, scroll, key, text).
 *
 * createCapture is a factory (config) => DesktopCapture-compatible viewer.
-* options.capture is an already started capture to reuse; when absent a relay
+* options.cache is a DesktopSessionCache: its entry is acquired for the call
+* (marking it in use so the idle window cannot cut the sequence short),
+* touched while actions are applied, finished on success so it stays cached,
+* and released on failure so the next call renegotiates. options.capture is an
+* already started capture to reuse instead; when neither is given a relay
 * session is opened and released around the call. options.frame, options.delay,
 * options.sleep, options.frameTimeout and options.waitForFrame are test seams.
 */
 async function desktopInput(client, args, createCapture, options) {
     options = options || {};
-    const existing = options.capture || null;
+    const cache = options.cache || null;
+    let entry = null;
     let session = null;
-    let capture = existing;
+    let capture = options.capture || null;
     try {
+        if ((capture == null) && (cache != null)) {
+            try {
+                entry = await cache.acquire(args.deviceid, sessionOptionsFrom(args));
+            } catch (error) {
+                throw surfaceCaptureError(error);
+            }
+            capture = entry.capture;
+        }
         if (capture == null) {
             // Launch failures (rights, consent, authentication) keep their own
             // message; only viewer errors borrow the server's words.
@@ -356,12 +373,21 @@ async function desktopInput(client, args, createCapture, options) {
         }
         const frame = await resolveInputFrame(capture, args.actions, options);
         try {
-            await applyDesktopActions(capture, args.actions, Object.assign({}, options, { frame: frame }));
+            await applyDesktopActions(capture, args.actions, Object.assign({}, options, {
+                frame: frame,
+                touch: ((cache != null) && (entry != null)) ? () => cache.touch(entry) : options.touch
+            }));
         } catch (error) {
             throw surfaceCaptureError(error);
         }
         return textResult(confirmInput(args.actions.length, args.deviceid));
+    } catch (error) {
+        if ((cache != null) && (entry != null)) {
+            try { await cache.release(args.deviceid, entry); } catch (ex) { }
+        }
+        throw error;
     } finally {
+        if ((cache != null) && (entry != null)) { cache.finish(entry); }
         if (session != null) { try { await session.release(); } catch (error) { } }
     }
 }
@@ -372,13 +398,13 @@ async function desktopInput(client, args, createCapture, options) {
  * options.client          A connected MeshCentralClient (or a compatible object).
  * options.createCapture   Optional capture factory, defaults to building a real
  *                         DesktopCapture from the session captureConfig.
- * options.cache           Optional DesktopSessionCache for the frames tool;
- *                         defaults to a cache over options.client whose sessions
- *                         close after idling and on process exit.
+ * options.cache           Optional DesktopSessionCache shared by the frames
+ *                         and input tools; defaults to a cache over
+ *                         options.client whose sessions close after idling and
+ *                         on process exit.
  * options.acquireCapture  Optional function (deviceid) => capture|null. When it
  *                         returns a capture, mesh_desktop_input reuses that
- *                         started capture and negotiates no relay session; by
- *                         default it peeks the frames session cache.
+ *                         started capture instead of acquiring from the cache.
  * options.idleTimeout     Idle timeout for the default cache, in milliseconds.
  * options.lifecycle       Process-like emitter carrying 'exit' for the default
  *                         cache; defaults to process.
@@ -395,9 +421,7 @@ function registerDesktopTools(registry, options) {
         idleTimeout: options.idleTimeout,
         lifecycle: options.lifecycle
     });
-    const acquireCapture = (typeof options.acquireCapture === 'function')
-        ? options.acquireCapture
-        : (deviceid) => { const entry = cache.peek(deviceid); return (entry != null) ? entry.capture : null; };
+    const acquireCapture = (typeof options.acquireCapture === 'function') ? options.acquireCapture : null;
 
     registry.register({
         name: 'mesh_desktop_snapshot',
@@ -431,13 +455,15 @@ function registerDesktopTools(registry, options) {
 
     registry.register({
         name: 'mesh_desktop_input',
-        description: 'Move the mouse, click, scroll, press keys and type text on a device\'s desktop. Actions apply in order over one desktop relay session: a session-cached capture is reused when one exists, otherwise a session is opened and closed around the call. Coordinates are in frame pixels, the space of the image mesh_desktop_snapshot returns, and are scaled onto the remote screen from that frame\'s screen metadata. Use the look-act-look loop: mesh_desktop_snapshot, then mesh_desktop_input, then mesh_desktop_snapshot again to confirm the change. The account\'s desktop right and the server\'s consent, privacy, recording and view-only behaviour are unchanged.',
+        description: 'Move the mouse, click, scroll, press keys and type text on a device\'s desktop. Actions apply in order over one desktop relay session: a cached session is reused and held for the call when one exists, otherwise a session is opened and closed around the call. Coordinates are in frame pixels, the space of the image mesh_desktop_snapshot returns, and are scaled onto the remote screen from that frame\'s screen metadata. Use the look-act-look loop: mesh_desktop_snapshot, then mesh_desktop_input, then mesh_desktop_snapshot again to confirm the change. The account\'s desktop right and the server\'s consent, privacy, recording and view-only behaviour are unchanged.',
         inputSchema: {
             deviceid: z.string().min(1).describe('Device id of the machine to control, bare or a full node id (node//...).'),
             actions: z.array(desktopActionSchema).min(1).max(MAX_ACTIONS).describe('Ordered actions to apply: move, click, scroll, key or text; at most ' + MAX_ACTIONS + ' per call.')
         },
         target: (args) => args.deviceid,
-        handler: (args) => desktopInput(options.client, args, createCapture, { capture: (acquireCapture != null) ? acquireCapture(args.deviceid) : null })
+        handler: (args) => desktopInput(options.client, args, createCapture, (acquireCapture != null)
+            ? { capture: acquireCapture(args.deviceid) }
+            : { cache: cache })
     });
 
     return registry;
