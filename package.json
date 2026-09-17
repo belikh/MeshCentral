@@ -37,6 +37,7 @@
     "sample-config-advanced.json"
   ],
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@seald-io/nedb": "4.1.2",
     "@zip.js/zip.js": "2.8.26",
     "archiver": "7.0.1",
@@ -54,7 +55,8 @@
     "ua-client-hints-js": "0.1.2",
     "ua-parser-js": "1.0.40",
     "ws": "8.21.1",
-    "yauzl": "2.10.0"
+    "yauzl": "2.10.0",
+    "zod": "4.6.5"
   },
   "scripts": {
     "test": "node --test"
