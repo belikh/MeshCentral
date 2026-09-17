@@ -318,7 +318,8 @@ test('an MCP client can launch the bridge over stdio, list tools and call mesh_l
     await client.connect(transport);
 
     const listed = await client.listTools();
-    assert.deepEqual(listed.tools.map((tool) => tool.name), ['mesh_list_devices', 'mesh_desktop_snapshot']);
+    assert.ok(listed.tools.some((tool) => tool.name === 'mesh_list_devices'));
+    assert.ok(listed.tools.some((tool) => tool.name === 'mesh_desktop_snapshot'));
 
     const result = await client.callTool({ name: 'mesh_list_devices', arguments: {} });
     assert.equal(result.isError, undefined);

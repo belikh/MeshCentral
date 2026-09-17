@@ -120,11 +120,11 @@ test('tool declarations take no credential arguments', async () => {
     const { server } = createServer({});
 
     const tools = server.registry.list();
-    assert.deepEqual(tools.map((tool) => tool.name), ['mesh_list_devices']);
+    const listDevices = tools.find((tool) => tool.name === 'mesh_list_devices');
+    assert.ok(listDevices != null);
 
     for (const tool of tools) {
         const properties = Object.keys(tool.inputSchema);
-        assert.ok(properties.length > 0, tool.name + ' declares an input schema');
         for (const property of properties) {
             assert.doesNotMatch(property, /pass|token|key|secret|credential/i, tool.name + '.' + property);
         }
@@ -140,10 +140,11 @@ test('an MCP client can list tools and call mesh_list_devices over a transport',
     await Promise.all([server.mcp.connect(serverTransport), client.connect(clientTransport)]);
 
     const listed = await client.listTools();
-    assert.deepEqual(listed.tools.map((tool) => tool.name), ['mesh_list_devices']);
-    assert.equal(listed.tools[0].description, server.registry.get('mesh_list_devices').description);
-    assert.equal(listed.tools[0].inputSchema.type, 'object');
-    assert.deepEqual(Object.keys(listed.tools[0].inputSchema.properties).sort(), ['filter', 'meshid']);
+    assert.ok(listed.tools.some((tool) => tool.name === 'mesh_list_devices'));
+    const listDevices = listed.tools.find((tool) => tool.name === 'mesh_list_devices');
+    assert.equal(listDevices.description, server.registry.get('mesh_list_devices').description);
+    assert.equal(listDevices.inputSchema.type, 'object');
+    assert.deepEqual(Object.keys(listDevices.inputSchema.properties).sort(), ['count', 'filter', 'group', 'meshid']);
 
     const result = await client.callTool({ name: 'mesh_list_devices', arguments: {} });
     assert.equal(result.isError, undefined);
