@@ -58,6 +58,7 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
     obj.mcpAuth = require('./mcp-auth.js');
     obj.mcpHttp = require('./mcp-http.js');
     obj.meshCentralClient = require('./meshcentral-client.js');
+    const loginToken = require('./login-token.js');
     const constants = (obj.crypto.constants ? obj.crypto.constants : require('constants')); // require('constants') is deprecated in Node 11.10, use require('crypto').constants instead.
 
     // Setup WebAuthn / FIDO2
@@ -509,34 +510,33 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
     }
     obj.agentIssues = [];
 
+    // Services backing login-token verification, shared by the login form and the /mcp endpoint
+    const loginTokenServices = {
+        getLoginToken: (tokenUser) => new Promise((resolve, reject) => {
+            obj.db.Get('logintoken-' + tokenUser, function (err, docs) {
+                if (err != null) { reject(err); return; }
+                resolve(((docs != null) && (docs.length === 1)) ? docs[0] : null);
+            });
+        }),
+        hashPassword: (password, salt) => new Promise((resolve, reject) => {
+            require('./pass').hash(password, salt, function (err, hash) { if (err != null) { reject(err); } else { resolve(hash); } }, 0);
+        }),
+        getUser: (userid) => Promise.resolve(obj.users[userid] || null)
+    };
+
     // Authenticate the user
     obj.authenticate = function (name, pass, domain, fn) {
         if ((typeof (name) != 'string') || (typeof (pass) != 'string') || (typeof (domain) != 'object')) { fn(new Error('invalid fields')); return; }
         if (name.startsWith('~t:')) {
-            // Login token, try to fetch the token from the database
-            obj.db.Get('logintoken-' + name, function (err, docs) {
-                if (err != null) { fn(err); return; }
-                if ((docs == null) || (docs.length != 1)) { fn(new Error('login token not found')); return; }
-                const loginToken = docs[0];
-                if ((loginToken.expire != 0) && (loginToken.expire < Date.now())) { fn(new Error('login token expired')); return; }
+            // Login token, verified with the same checks as the /mcp endpoint
+            loginToken.verifyLoginToken(loginTokenServices, { tokenUser: name, tokenPass: pass }).then(function (verified) {
+                if (verified == null) { fn(new Error('invalid login token')); return; }
 
-                // Default strong password hashing (pbkdf2 SHA384)
-                require('./pass').hash(pass, loginToken.salt, function (err, hash, tag) {
-                    if (err) return fn(err);
-                    if (hash == loginToken.hash) {
-                        // Login username and password are valid.
-                        var user = obj.users[loginToken.userid];
-                        if (!user) { fn(new Error('cannot find user')); return; }
-                        if ((user.siteadmin) && (user.siteadmin != 0xFFFFFFFF) && (user.siteadmin & 32) != 0) { fn('locked'); return; }
-
-                        // Successful login token authentication
-                        var loginOptions = { tokenName: loginToken.name, tokenUser: loginToken.tokenUser };
-                        if (loginToken.expire != 0) { loginOptions.expire = loginToken.expire; }
-                        return fn(null, user._id, null, loginOptions);
-                    }
-                    fn(new Error('invalid password'));
-                }, 0);
-            });
+                // Successful login token authentication
+                var loginOptions = { tokenName: verified.loginToken.name, tokenUser: verified.loginToken.tokenUser };
+                if (verified.loginToken.expire != 0) { loginOptions.expire = verified.loginToken.expire; }
+                fn(null, verified.user._id, null, loginOptions);
+            }, function (err) { fn(err); });
         } else if (domain.auth == 'ldap') {
             // This method will handle LDAP login
             const ldapHandler = function ldapHandlerFunc(err, xxuser) {
@@ -7387,17 +7387,7 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
             if (parent.multiServer != null) { obj.app.ws('/meshserver.ashx', function (ws, req) { parent.multiServer.CreatePeerInServer(parent.multiServer, ws, req, obj.args.tlsoffload == null); }); }
 
             // MCP endpoint on the existing listener: always on, authenticated by login token
-            const mcpAuthenticate = obj.mcpAuth.createLoginTokenAuthenticator({
-                getLoginToken: (tokenUser) => new Promise((resolve) => {
-                    obj.db.Get('logintoken-' + tokenUser, function (err, docs) {
-                        resolve(((err == null) && (docs != null) && (docs.length === 1)) ? docs[0] : null);
-                    });
-                }),
-                hashPassword: (password, salt) => new Promise((resolve, reject) => {
-                    require('./pass').hash(password, salt, function (err, hash, tag) { if (err) { reject(err); } else { resolve(hash); } }, 0);
-                }),
-                getUser: (userid) => Promise.resolve(obj.users[userid] || null)
-            });
+            const mcpAuthenticate = obj.mcpAuth.createLoginTokenAuthenticator(loginTokenServices);
             const mcpHandler = obj.mcpHttp.createMcpHttpHandler({
                 authenticate: mcpAuthenticate,
                 createClient: (account) => {
@@ -7407,8 +7397,7 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
                     else if (Array.isArray(bind) && (bind.length > 0) && (typeof bind[0] == 'string') && (bind[0] != '0.0.0.0') && (bind[0] != '::')) { address = bind[0]; }
                     const url = ((obj.tlsServer != null) ? 'wss://' : 'ws://') + address + ':' + obj.args.port + '/control.ashx';
                     return new obj.meshCentralClient.MeshCentralClient({ url: url, user: account.tokenUser, password: account.tokenPass });
-                },
-                idleTimeout: 10 * 60 * 1000
+                }
             });
             obj.app.post('/mcp', mcpHandler);
             obj.app.get('/mcp', mcpHandler);

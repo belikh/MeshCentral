@@ -4,16 +4,18 @@
 * @description Bearer login-token authentication for the MCP HTTP endpoint.
 *
 * Parses `Authorization: Bearer mt_...` and resolves the credential to the
-* owning MeshCentral account using the same checks as the password login path:
-* the login-token record must exist, be unexpired, its password must hash to
-* the stored hash, and the owning account must exist and not be locked. No
-* Express coupling, so it can be tested directly.
+* owning MeshCentral account through the shared login-token verifier, which
+* applies the same checks as the password login path: the login-token record
+* must exist, be unexpired, its password must hash to the stored hash, and the
+* owning account must exist and not be locked. No Express coupling, so it can
+* be tested directly.
 *
 * @author Jupiter Belic
 * @license Apache-2.0
 */
 
 const { decodeCredential } = require('./mcp-credential.js');
+const { validateServices, verifyLoginToken } = require('./login-token.js');
 
 const BEARER = /^\s*Bearer\s+(\S+)\s*$/i;
 
@@ -41,48 +43,27 @@ function parseBearerCredential(header) {
 * credential pair so a control connection can be opened with it.
 */
 function createLoginTokenAuthenticator(services) {
-    services = services || {};
-    if (typeof services.getLoginToken !== 'function') { throw new Error('createLoginTokenAuthenticator requires getLoginToken.'); }
-    if (typeof services.hashPassword !== 'function') { throw new Error('createLoginTokenAuthenticator requires hashPassword.'); }
-    if (typeof services.getUser !== 'function') { throw new Error('createLoginTokenAuthenticator requires getUser.'); }
+    validateServices(services);
 
     return async function authenticate(req) {
         const headers = (req != null) ? req.headers : null;
         const credential = parseBearerCredential((headers != null) ? headers.authorization : null);
         if (credential == null) { return null; }
 
-        let loginToken = null;
+        let verified = null;
         try {
-            loginToken = await services.getLoginToken(credential.tokenUser);
+            verified = await verifyLoginToken(services, credential);
         } catch (error) {
             return null;
         }
-        if (loginToken == null) { return null; }
-        if ((loginToken.expire != 0) && (loginToken.expire < Date.now())) { return null; }
-
-        let hash = null;
-        try {
-            hash = await services.hashPassword(credential.tokenPass, loginToken.salt);
-        } catch (error) {
-            return null;
-        }
-        if (hash !== loginToken.hash) { return null; }
-
-        let user = null;
-        try {
-            user = await services.getUser(loginToken.userid);
-        } catch (error) {
-            return null;
-        }
-        if (user == null) { return null; }
-        if ((user.siteadmin) && (user.siteadmin != 0xFFFFFFFF) && ((user.siteadmin & 32) !== 0)) { return null; }
+        if (verified == null) { return null; }
 
         return {
-            userid: user._id,
-            username: user.name,
+            userid: verified.user._id,
+            username: verified.user.name,
             tokenUser: credential.tokenUser,
             tokenPass: credential.tokenPass,
-            tokenName: loginToken.name
+            tokenName: verified.loginToken.name
         };
     };
 }
