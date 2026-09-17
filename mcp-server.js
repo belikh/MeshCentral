@@ -28,7 +28,6 @@ const {
 const {
     SERVER_NAME,
     createBridgeServer,
-    createAuditLog,
     redact,
     errorMessage
 } = require('./mcp-bridge.js');
@@ -213,13 +212,8 @@ if (require.main === module) {
 }
 
 module.exports = {
-    SERVER_NAME: SERVER_NAME,
     parseConfig: parseConfig,
-    createAuditLog: createAuditLog,
-    createMcpServer: createBridgeServer,
-    createBridgeServer: createBridgeServer,
     versionText: versionText,
     usageText: usageText,
-    redact: redact,
     main: main
 };

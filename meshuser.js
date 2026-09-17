@@ -14,7 +14,7 @@
 "use strict";
 
 const commandRights = require('./meshuser-command-rights.js');
-const mcpCredential = require('./mcp-credential.js');
+const mcpLoginTokenResponse = require('./mcp-login-token-response.js');
 
 // volume & bitlocker statuses
 const encMethod = { 0: '', 1: "AES-128 with diffuser", 2: "AES-256 with diffuser", 3: 'AES-128', 4: 'AES-256', 5: "Hardware encryption", 6: 'XTS-AES-128', 7: 'XTS-AES-256' };
@@ -5262,7 +5262,7 @@ module.exports.CreateMeshUser = function (parent, db, ws, req, args, domain, use
                     parent.db.Set(dbentry);
 
                     // Send the token information back, with the MCP connection credential
-                    try { ws.send(JSON.stringify(mcpCredential.createLoginTokenResponse(command.name, tokenUser, tokenPass, created, expire))); } catch (ex) { }
+                    try { ws.send(JSON.stringify(mcpLoginTokenResponse.createLoginTokenResponse(command.name, tokenUser, tokenPass, created, expire))); } catch (ex) { }
 
                     // Dispatch the new event
                     var targets = ['*', 'server-users', user._id];

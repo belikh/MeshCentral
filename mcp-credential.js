@@ -66,27 +66,9 @@ function decodeCredential(credential) {
     return { tokenUser: decoded.slice(0, separator), tokenPass: decoded.slice(separator + 1) };
 }
 
-/**
-* The login-token creation response, with the connection credential included.
-* The username and password are revealed exactly once here; the credential is
-* the single string an MCP client uses.
-*/
-function createLoginTokenResponse(name, tokenUser, tokenPass, created, expire) {
-    return {
-        action: 'createLoginToken',
-        name: name,
-        tokenUser: tokenUser,
-        tokenPass: tokenPass,
-        mcpToken: encodeCredential(tokenUser, tokenPass),
-        created: created,
-        expire: expire
-    };
-}
-
 module.exports = {
     PREFIX: PREFIX,
     CredentialError: CredentialError,
     encodeCredential: encodeCredential,
-    decodeCredential: decodeCredential,
-    createLoginTokenResponse: createLoginTokenResponse
+    decodeCredential: decodeCredential
 };

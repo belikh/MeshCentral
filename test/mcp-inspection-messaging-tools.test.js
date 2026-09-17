@@ -14,7 +14,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createMcpServer } = require('../mcp-server.js');
+const { createBridgeServer } = require('../mcp-bridge.js');
 const catalogue = require('../command-catalogue.js');
 const { TimeoutError } = require('../meshcentral-client.js');
 
@@ -57,7 +57,7 @@ function createFakeClient(state) {
 function createServer(state) {
     const records = [];
     const client = createFakeClient(state);
-    const server = createMcpServer({ client, audit: { record: (record) => records.push(record) } });
+    const server = createBridgeServer({ client, audit: { record: (record) => records.push(record) } });
     return { client, server, records };
 }
 

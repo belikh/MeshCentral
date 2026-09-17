@@ -14,7 +14,7 @@ const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { InMemoryTransport } = require('@modelcontextprotocol/sdk/inMemory.js');
 
 const { createToolRegistry, imageResult } = require('../mcp-tool-registry.js');
-const { createMcpServer } = require('../mcp-server.js');
+const { createBridgeServer } = require('../mcp-bridge.js');
 const { registerDesktopTools } = require('../mcp-desktop-tools.js');
 const { AuthError, RelayError } = require('../meshcentral-client.js');
 const { DesktopCaptureError } = require('../desktopcapture.js');
@@ -301,7 +301,7 @@ test('imageResult builds an image block and an optional text block', () => {
 test('an MCP client can call mesh_desktop_snapshot over a transport', async (t) => {
     const fakes = createFakes();
     const records = [];
-    const server = createMcpServer({
+    const server = createBridgeServer({
         client: fakes.client,
         audit: { record: (record) => records.push(record) },
         createCapture: fakes.factory

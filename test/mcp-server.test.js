@@ -17,7 +17,8 @@ const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { InMemoryTransport } = require('@modelcontextprotocol/sdk/inMemory.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
 
-const { parseConfig, createAuditLog, createMcpServer, main, usageText } = require('../mcp-server.js');
+const { parseConfig, main, usageText } = require('../mcp-server.js');
+const { createBridgeServer, createAuditLog } = require('../mcp-bridge.js');
 const { ConfigurationError } = require('../meshcentral-client.js');
 const { BRIDGE_VERSION, TOOL_SCHEMA_VERSION } = require('../mcp-version.js');
 const packageJson = require('../package.json');
@@ -258,14 +259,14 @@ test('audit records never include credentials', () => {
     assert.match(output, /\[redacted\]/);
 });
 
-test('createMcpServer requires a client', () => {
-    assert.throws(() => createMcpServer({}), ConfigurationError);
+test('createBridgeServer requires a client', () => {
+    assert.throws(() => createBridgeServer({}), ConfigurationError);
 });
 
 test('one invocation through the server writes exactly one audit record', async () => {
     const stream = captureStream();
     const client = { request: async () => ({ action: 'nodes', result: 'ok', nodes: {} }) };
-    const server = createMcpServer({ client, audit: createAuditLog({ stream }) });
+    const server = createBridgeServer({ client, audit: createAuditLog({ stream }) });
 
     const result = await server.registry.call('mesh_list_devices', {});
 
@@ -283,7 +284,7 @@ test('one invocation through the server writes exactly one audit record', async 
 test('a failing invocation is audited with the error reason', async () => {
     const stream = captureStream();
     const client = { request: async () => { throw new Error('Access denied'); } };
-    const server = createMcpServer({ client, audit: createAuditLog({ stream }) });
+    const server = createBridgeServer({ client, audit: createAuditLog({ stream }) });
 
     await server.registry.call('mesh_list_devices', {});
 
@@ -359,7 +360,7 @@ test('--version prints the bridge and tool schema versions to stderr without tou
 
 test('the MCP server advertises the bridge version and the tool schema version', async (t) => {
     const captured = [];
-    const server = createMcpServer({
+    const server = createBridgeServer({
         client: { request: async () => ({ action: 'nodes', result: 'ok', nodes: {} }) },
         audit: { record: (record) => captured.push(record) }
     });

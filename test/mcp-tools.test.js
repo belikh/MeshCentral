@@ -15,7 +15,7 @@ const path = require('node:path');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { InMemoryTransport } = require('@modelcontextprotocol/sdk/inMemory.js');
 
-const { createMcpServer } = require('../mcp-server.js');
+const { createBridgeServer } = require('../mcp-bridge.js');
 const { TimeoutError } = require('../meshcentral-client.js');
 
 const nodesFixture = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'nodes.json'), 'utf8'));
@@ -40,7 +40,7 @@ function createFakeClient(state) {
 function createServer(state) {
     const records = [];
     const client = createFakeClient(state);
-    const server = createMcpServer({ client, audit: { record: (record) => records.push(record) } });
+    const server = createBridgeServer({ client, audit: { record: (record) => records.push(record) } });
     return { client, server, records };
 }
 

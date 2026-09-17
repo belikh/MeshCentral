@@ -16,7 +16,7 @@ const path = require('node:path');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { InMemoryTransport } = require('@modelcontextprotocol/sdk/inMemory.js');
 
-const { createMcpServer } = require('../mcp-server.js');
+const { createBridgeServer } = require('../mcp-bridge.js');
 const catalogue = require('../command-catalogue.js');
 const { TimeoutError } = require('../meshcentral-client.js');
 
@@ -27,58 +27,14 @@ const MESH_BRAVO = 'mesh//MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIy';
 const NODE_ALPHA = 'node//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const NODE_BRAVO = 'node//BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
 
-const TOOL_NAMES = [
-    'mesh_edit_user',
-    'mesh_list_users',
-    'mesh_list_user_sessions',
-    'mesh_list_groups',
-    'mesh_list_devices',
-    'mesh_list_device_group_users',
-    'mesh_get_events',
-    'mesh_login_tokens',
-    'mesh_server_info',
-    'mesh_server_version',
-    'mesh_user_info',
-    'mesh_add_user',
-    'mesh_remove_user',
-    'mesh_add_device_group',
-    'mesh_remove_device_group',
-    'mesh_edit_device_group',
-    'mesh_broadcast',
-    'mesh_show_events',
-    'mesh_add_user_to_device_group',
-    'mesh_remove_user_from_device_group',
-    'mesh_add_user_to_device',
-    'mesh_remove_user_from_device',
-    'mesh_send_invite_email',
-    'mesh_generate_invite_link',
-    'mesh_config',
-    'mesh_move_to_device_group',
-    'mesh_get_device',
-    'mesh_remove_device',
-    'mesh_edit_device',
-    'mesh_add_local_device',
-    'mesh_add_amt_device',
-    'mesh_add_user_group',
-    'mesh_list_user_groups',
-    'mesh_remove_user_group',
-    'mesh_run_command',
-    'mesh_shell',
-    'mesh_device_open_url',
-    'mesh_device_message',
-    'mesh_device_toast',
-    'mesh_add_to_user_group',
-    'mesh_remove_from_user_group',
-    'mesh_remove_all_users_from_user_group',
-    'mesh_device_sharing',
-    'mesh_device_power',
-    'mesh_index_agent_error_log',
-    'mesh_agent_download',
-    'mesh_report',
-    'mesh_group_toast',
-    'mesh_group_message',
-    'mesh_web_relay'
+const DESKTOP_TOOL_NAMES = [
+    'mesh_desktop_snapshot',
+    'mesh_desktop_frames',
+    'mesh_desktop_input',
+    'mesh_desktop_status'
 ];
+
+const EXPECTED_TOOL_NAMES = catalogue.mcpCommands().map((entry) => entry.mcp.name).concat(DESKTOP_TOOL_NAMES);
 
 function createFakeClient(state) {
     state = state || {};
@@ -102,7 +58,7 @@ function createFakeClient(state) {
 function createServer(state) {
     const records = [];
     const client = createFakeClient(state);
-    const server = createMcpServer({ client, audit: { record: (record) => records.push(record) } });
+    const server = createBridgeServer({ client, audit: { record: (record) => records.push(record) } });
     return { client, server, records };
 }
 
@@ -175,11 +131,9 @@ const networkFixture = {
 
 const lastConnectFixture = { action: 'lastconnect', time: 1700000000000, addr: '10.0.0.5:1234' };
 
-test('the registry exposes one generated tool per catalogue MCP entry', () => {
+test('the registry exposes the catalogue tools then the desktop tools, in order', () => {
     const { server } = createServer({});
-    const names = server.registry.list().map((tool) => tool.name);
-    assert.deepEqual(names.filter((name) => TOOL_NAMES.includes(name)), TOOL_NAMES);
-    assert.deepEqual(names.filter((name) => catalogue.mcpCommands().some((entry) => entry.mcp.name === name)), catalogue.mcpCommands().map((entry) => entry.mcp.name));
+    assert.deepEqual(server.registry.list().map((tool) => tool.name), EXPECTED_TOOL_NAMES);
 });
 
 test('argument schemas are generated from the catalogue argument definitions', () => {
@@ -201,7 +155,7 @@ test('an MCP client sees the generated tool schemas over a transport', async (t)
     const listed = await client.listTools();
 
     const names = listed.tools.map((tool) => tool.name);
-    assert.deepEqual(names.filter((name) => TOOL_NAMES.includes(name)), TOOL_NAMES);
+    assert.deepEqual(names, EXPECTED_TOOL_NAMES);
     const device = listed.tools.find((tool) => tool.name === 'mesh_get_device');
     assert.deepEqual(device.inputSchema.required, ['id']);
     assert.equal(device.inputSchema.properties.id.description, catalogue.byName('deviceinfo').args[0].description);

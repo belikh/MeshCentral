@@ -17,8 +17,7 @@ const {
     PREFIX,
     CredentialError,
     encodeCredential,
-    decodeCredential,
-    createLoginTokenResponse
+    decodeCredential
 } = require('../mcp-credential.js');
 
 const TOKEN_USER = '~t:AbCdEf0123456789/xYz==';
@@ -66,19 +65,6 @@ test('decoding rejects malformed pairs', () => {
     assert.throws(() => decodeCredential(separate('nocolon')), (error) => error.code === 'E_FORMAT');
     assert.throws(() => decodeCredential(separate(':onlypass')), (error) => error.code === 'E_FORMAT');
     assert.throws(() => decodeCredential(separate('onlyuser:')), (error) => error.code === 'E_FORMAT');
-});
-
-test('the creation response carries the credential and no secret material', () => {
-    const response = createLoginTokenResponse('Agent laptop', TOKEN_USER, TOKEN_PASS, 1700000000000, 0);
-    assert.equal(response.action, 'createLoginToken');
-    assert.equal(response.name, 'Agent laptop');
-    assert.equal(response.tokenUser, TOKEN_USER);
-    assert.equal(response.tokenPass, TOKEN_PASS);
-    assert.equal(response.created, 1700000000000);
-    assert.equal(response.expire, 0);
-    assert.deepEqual(decodeCredential(response.mcpToken), { tokenUser: TOKEN_USER, tokenPass: TOKEN_PASS });
-    assert.equal('salt' in response, false);
-    assert.equal('hash' in response, false);
 });
 
 test('the decoded password still verifies against the stored hash', async () => {
