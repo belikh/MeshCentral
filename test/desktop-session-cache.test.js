@@ -22,6 +22,21 @@ function delay(milliseconds) {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+// Deterministic clock for the idle-eviction tests: now() feeds the cache's
+// injected clock while advance() moves it in lockstep with the mocked timer
+// queue, so eviction is asserted without any real elapsed time.
+function createClock(t) {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let current = 1000;
+    return {
+        now: () => current,
+        advance(milliseconds) {
+            current += milliseconds;
+            t.mock.timers.tick(milliseconds);
+        }
+    };
+}
+
 // One consistent fake environment: launches return sessions, sessions attach
 // captures, captures can fail to start or close on demand.
 function createFakes(state) {
@@ -238,48 +253,61 @@ test('release ignores an entry that is no longer current', async () => {
     assert.equal(fakes.sessions[0].released, 0);
 });
 
-test('an idle session is closed after the idle timeout', async () => {
+test('an idle session is closed after the idle timeout and reopened by the next acquire', async (t) => {
+    const clock = createClock(t);
     const fakes = createFakes();
-    const cache = createCache(fakes, { idleTimeout: 30 });
+    const cache = createCache(fakes, { idleTimeout: 30, now: clock.now });
 
     const entry = await cache.acquire('node//AbCdEf012345');
     cache.finish(entry);
-    await delay(20);
+
+    clock.advance(20);
     assert.equal(cache.size, 1);
 
-    await delay(30);
+    clock.advance(20);
     assert.equal(cache.size, 0);
     assert.equal(fakes.sessions[0].released, 1);
     assert.equal(fakes.captures[0].closed, 1);
+
+    const replacement = await cache.acquire('node//AbCdEf012345');
+    assert.notEqual(replacement, entry);
+    assert.equal(fakes.launches.length, 2);
+    assert.equal(fakes.sessions.length, 2);
+    assert.equal(fakes.sessions[1].released, 0);
+    assert.equal(cache.peek('node//AbCdEf012345'), replacement);
+    assert.equal(cache.size, 1);
 });
 
-test('an in-use session is protected from idle eviction until finished', async () => {
+test('an in-use session is protected from idle eviction until finished', async (t) => {
+    const clock = createClock(t);
     const fakes = createFakes();
-    const cache = createCache(fakes, { idleTimeout: 30 });
+    const cache = createCache(fakes, { idleTimeout: 30, now: clock.now });
 
     const entry = await cache.acquire('node//AbCdEf012345');
-    await delay(50);
+    clock.advance(50);
     assert.equal(cache.size, 1);
     assert.equal(fakes.sessions[0].released, 0);
 
     cache.finish(entry);
-    await delay(50);
+    clock.advance(50);
     assert.equal(cache.size, 0);
     assert.equal(fakes.sessions[0].released, 1);
 });
 
-test('touch extends the idle deadline', async () => {
+test('touch extends the idle deadline', async (t) => {
+    const clock = createClock(t);
     const fakes = createFakes();
-    const cache = createCache(fakes, { idleTimeout: 40 });
+    const cache = createCache(fakes, { idleTimeout: 40, now: clock.now });
 
     const entry = await cache.acquire('node//AbCdEf012345');
     cache.finish(entry);
-    await delay(25);
+
+    clock.advance(25);
     cache.touch(entry);
-    await delay(25);
+    clock.advance(25);
     assert.equal(cache.size, 1);
 
-    await delay(30);
+    clock.advance(30);
     assert.equal(cache.size, 0);
     assert.equal(fakes.sessions[0].released, 1);
 });

@@ -58,6 +58,21 @@ function delay(milliseconds) {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+// Deterministic clock for idle-eviction tests: now() feeds the cache's
+// injected clock while advance() moves it in lockstep with the mocked timer
+// queue, so eviction is asserted without any real elapsed time.
+function createClock(t) {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let current = 1000;
+    return {
+        now: () => current,
+        advance(milliseconds) {
+            current += milliseconds;
+            t.mock.timers.tick(milliseconds);
+        }
+    };
+}
+
 function createFakes(state) {
     state = state || {};
     const launches = [];
@@ -134,7 +149,8 @@ function createHarness(state) {
         client: fakes.client,
         createCapture: fakes.factory,
         idleTimeout: ((state != null) && (state.idleTimeout != null)) ? state.idleTimeout : 30000,
-        lifecycle: lifecycle
+        lifecycle: lifecycle,
+        now: (state != null) ? state.now : undefined
     });
     const registry = createToolRegistry({ onInvocation: (record) => records.push(record) });
     registerDesktopTools(registry, { client: fakes.client, createCapture: fakes.factory, cache: cache });
@@ -364,13 +380,17 @@ test('a refused relay launch is surfaced verbatim and leaves no entry', async ()
     assert.equal(records[0].reason, message);
 });
 
-test('the cached session closes after idle and a later poll opens a new one', async () => {
-    const { registry, launches, sessions, cache } = createHarness({ idleTimeout: 30 });
+test('the cached session closes after idle and a later poll opens a new one', async (t) => {
+    const clock = createClock(t);
+    const { registry, launches, sessions, cache } = createHarness({ idleTimeout: 30, now: clock.now });
 
     await registry.call('mesh_desktop_frames', { deviceid: NODE_ID, mode: 'poll' });
     assert.equal(cache.size, 1);
 
-    await delay(60);
+    clock.advance(20);
+    assert.equal(cache.size, 1);
+
+    clock.advance(20);
     assert.equal(cache.size, 0);
     assert.equal(sessions[0].released, 1);
 
@@ -378,6 +398,7 @@ test('the cached session closes after idle and a later poll opens a new one', as
     assert.equal(result.isError, undefined);
     assert.equal(launches.length, 2);
     assert.equal(sessions.length, 2);
+    assert.equal(cache.size, 1);
 });
 
 test('cached frame sessions close when the process exits', async () => {
