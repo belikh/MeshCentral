@@ -28,6 +28,12 @@
 *   mesh_desktop_input     - move, click, scroll, press keys, type text
 *   mesh_desktop_snapshot  - see the screen change
 *
+* The status tool reports whether a capture is currently possible for a device
+* before any session is attempted: device online state, the agent's desktop
+* capability, the account's desktop relay right and any cached session. It
+* never launches a relay session: it reads the node record and the connection
+* handshake, and peeks the session cache.
+*
 * @author Jupiter Belic
 * @license Apache-2.0
 */
@@ -55,6 +61,12 @@ const MAX_ACTIONS = 200;
 const MAX_TEXT_LENGTH = 1024;
 const DEFAULT_STEP_DELAY = 5;
 const DEFAULT_FRAME_TIMEOUT = 5000;
+
+// The agent capability bit that advertises desktop capture support.
+const AGENT_CAPS_DESKTOP = 1;
+// Mesh rights that permit a desktop relay: remote control (8) or relay (0x200000).
+const MESH_RIGHTS_DESKTOP = 0x00200008;
+const SITE_RIGHTS_ADMIN = 0xFFFFFFFF;
 
 const DEFAULT_FRAME_COUNT = 3;
 const MAX_FRAME_COUNT = 10;
@@ -85,12 +97,19 @@ function surfaceCaptureError(error) {
 }
 
 // Translate the shared imageType/quality/scale arguments into session options.
-// The same options feed the snapshot launch and the frames cache.
-function sessionOptionsFrom(args) {
+// Explicit call arguments win over the bridge's configured defaults; without
+// either, the option is left unset so the capture module's own defaults apply.
+// The same options feed the snapshot launch, the input launch and the frames
+// cache, so every session opened by these tools honours the defaults.
+function sessionOptionsFrom(args, defaults) {
+    defaults = defaults || {};
     const sessionOptions = {};
-    if (args.imageType !== undefined) { sessionOptions.imageType = IMAGE_TYPES[args.imageType]; }
-    if (args.quality !== undefined) { sessionOptions.compression = args.quality; }
-    if (args.scale !== undefined) { sessionOptions.scaling = args.scale; }
+    const imageType = (args.imageType !== undefined) ? args.imageType : defaults.imageType;
+    if (imageType !== undefined) { sessionOptions.imageType = IMAGE_TYPES[imageType]; }
+    const quality = (args.quality !== undefined) ? args.quality : defaults.quality;
+    if (quality !== undefined) { sessionOptions.compression = quality; }
+    const scale = (args.scale !== undefined) ? args.scale : defaults.scale;
+    if (scale !== undefined) { sessionOptions.scaling = scale; }
     return sessionOptions;
 }
 
@@ -103,9 +122,11 @@ function sessionOptionsFrom(args) {
 * args.scale      Optional maximum frame width in pixels.
 *
 * createCapture is a factory (config) => DesktopCapture-compatible viewer.
+* defaults, when given, are the configured fallbacks for imageType, quality and
+* scale; explicit arguments win over them.
 */
-async function desktopSnapshot(client, args, createCapture) {
-    const session = await client.launchDesktopSession(args.deviceid, sessionOptionsFrom(args));
+async function desktopSnapshot(client, args, createCapture, defaults) {
+    const session = await client.launchDesktopSession(args.deviceid, sessionOptionsFrom(args, defaults));
     try {
         const capture = session.attach(createCapture(session.captureConfig));
         let frame = null;
@@ -176,10 +197,10 @@ function framesResult(frames) {
 * so repeated polls and look-act-look loops reuse one relay negotiation. Any
 * failure releases the cached session so the next call renegotiates.
 */
-async function desktopFrames(cache, args) {
+async function desktopFrames(cache, args, defaults) {
     let entry = null;
     try {
-        entry = await cache.acquire(args.deviceid, sessionOptionsFrom(args));
+        entry = await cache.acquire(args.deviceid, sessionOptionsFrom(args, defaults));
     } catch (error) {
         throw surfaceCaptureError(error);
     }
@@ -331,6 +352,126 @@ function confirmInput(count, deviceid) {
 }
 
 /**
+* Resolve the account's desktop relay right from the connection handshake.
+* Returns true when the account can open a desktop relay, false when it
+* demonstrably cannot, and null when the handshake carries no userinfo to
+* judge from. Full site administrators hold the right without any links;
+* everyone else needs the remote control or relay right on the device's
+* device group or on the device itself.
+*/
+
+function resolveDesktopRight(userInfo, node) {
+    if (userInfo == null) { return null; }
+    const siteadmin = userInfo.siteadmin;
+    if (siteadmin === SITE_RIGHTS_ADMIN) { return true; }
+    const links = userInfo.links;
+    if ((links == null) || (typeof links !== 'object')) { return false; }
+    for (const key of [node.meshid, node.id]) {
+        if (key == null) { continue; }
+        const link = links[key];
+        if (link == null) { continue; }
+        if (link.rights === SITE_RIGHTS_ADMIN) { return true; }
+        if ((typeof link.rights === 'number') && ((link.rights & MESH_RIGHTS_DESKTOP) !== 0)) { return true; }
+    }
+    return false;
+}
+
+/** Describe the encoding a cached session was opened with, or null. */
+function sessionEncoding(capture) {
+    const encoding = (capture != null) ? capture.encoding : null;
+    if (encoding == null) { return null; }
+    for (const name of IMAGE_TYPE_NAMES) {
+        if (IMAGE_TYPES[name] === encoding.imageType) {
+            return { imageType: name, quality: encoding.compression, scale: encoding.scaling };
+        }
+    }
+    return null;
+}
+
+/**
+* Find one node in a nodes response by id, bare or partial, the way the
+* catalogue's deviceinfo entry does. Returns { node, meshid } or null.
+*/
+function findNode(nodes, deviceid) {
+    if ((nodes == null) || (typeof nodes !== 'object')) { return null; }
+    for (const meshid of Object.keys(nodes)) {
+        const group = nodes[meshid];
+        if (!Array.isArray(group)) { continue; }
+        for (const node of group) {
+            if ((node != null) && (String(node._id).indexOf(deviceid) >= 0)) { return { node, meshid }; }
+        }
+    }
+    return null;
+}
+
+/** Compact offline check: connectivity bit 0 (agent) or 1 (CIRA). */
+function isOnline(node) {
+    return (Number(node.conn) || 0) !== 0;
+}
+
+/**
+* Report whether capturing a device's screen is currently possible.
+*
+* args.deviceid  Device id, bare or a full node id.
+*
+* options.client  Required. The connected MeshCentral client whose handshake
+*                 carries userInfo.
+* options.cache   Optional session cache to peek, never acquire. When absent,
+*                 session.cached is reported as false.
+* options.now     Clock in milliseconds, Date.now by default.
+*
+* Reads the device record through the client's nodes request and the account
+* rights from the handshake. Never launches a relay session. Resolves with a
+* text/JSON status report: 'ready' when capture can be attempted, 'blocked'
+* with per-check reasons when it demonstrably cannot, and 'unknown' when a
+* check cannot be evaluated (the account's rights are not in the handshake).
+*/
+async function desktopStatus(options, args) {
+    options = options || {};
+    const response = await options.client.request('nodes', {});
+    const found = findNode((response != null) ? response.nodes : null, args.deviceid);
+    if (found == null) {
+        throw new Error('Invalid device id');
+    }
+
+    const node = found.node;
+    const online = isOnline(node);
+    const caps = (node.agent != null) && (typeof node.agent.caps === 'number') ? node.agent.caps : null;
+    const desktopCapable = (caps == null) ? null : ((caps & AGENT_CAPS_DESKTOP) !== 0);
+    const desktopRight = resolveDesktopRight(options.client.userInfo, { id: node._id, meshid: found.meshid });
+
+    let entry = null;
+    if (options.cache != null) { entry = options.cache.peek(args.deviceid); }
+    const now = (typeof options.now === 'function') ? options.now() : Date.now();
+    const session = {
+        cached: entry != null,
+        // A cached entry is at least a moment old; never report 0 and read as uncached.
+        ageMs: (entry != null) ? Math.max(1, now - entry.lastUsed) : null,
+        encoding: (entry != null) ? sessionEncoding(entry.capture) : null
+    };
+
+    const reasons = [];
+    if (!online) { reasons.push('offline'); }
+    if (desktopCapable === false) { reasons.push('desktop-unsupported'); }
+    if (desktopRight === false) { reasons.push('missing-desktop-right'); }
+    let status = (reasons.length > 0) ? 'blocked' : 'ready';
+    if ((desktopRight == null) && (desktopCapable !== false) && online) {
+        reasons.push('rights-unknown');
+        status = 'unknown';
+    }
+
+    return textResult(JSON.stringify({
+        status: status,
+        reasons: reasons,
+        device: { id: node._id, name: (node.name != null) ? node.name : null, meshid: found.meshid },
+        online: online,
+        agent: { desktop: desktopCapable, caps: caps },
+        account: { desktopRight: desktopRight },
+        session: session
+    }, null, 2));
+}
+
+/**
 * Apply validated input actions to a device's desktop.
 *
 * args.deviceid  Device id, bare or a full node id.
@@ -345,7 +486,7 @@ function confirmInput(count, deviceid) {
 * session is opened and released around the call. options.frame, options.delay,
 * options.sleep, options.frameTimeout and options.waitForFrame are test seams.
 */
-async function desktopInput(client, args, createCapture, options) {
+async function desktopInput(client, args, createCapture, options, defaults) {
     options = options || {};
     const cache = options.cache || null;
     let entry = null;
@@ -354,7 +495,7 @@ async function desktopInput(client, args, createCapture, options) {
     try {
         if ((capture == null) && (cache != null)) {
             try {
-                entry = await cache.acquire(args.deviceid, sessionOptionsFrom(args));
+                entry = await cache.acquire(args.deviceid, sessionOptionsFrom(args, defaults));
             } catch (error) {
                 throw surfaceCaptureError(error);
             }
@@ -363,7 +504,7 @@ async function desktopInput(client, args, createCapture, options) {
         if (capture == null) {
             // Launch failures (rights, consent, authentication) keep their own
             // message; only viewer errors borrow the server's words.
-            session = await client.launchDesktopSession(args.deviceid, {});
+            session = await client.launchDesktopSession(args.deviceid, sessionOptionsFrom(args, defaults));
             capture = session.attach(createCapture(session.captureConfig));
             try {
                 await capture.start();
@@ -405,6 +546,12 @@ async function desktopInput(client, args, createCapture, options) {
  * options.acquireCapture  Optional function (deviceid) => capture|null. When it
  *                         returns a capture, mesh_desktop_input reuses that
  *                         started capture instead of acquiring from the cache.
+ * options.defaults        Optional { imageType, quality, scale } applied when a
+ *                         session is opened without the matching call argument;
+ *                         explicit arguments win, capture module defaults apply
+ *                         when neither is set.
+ * options.now             Clock in milliseconds for the status tool's cached
+ *                         session age; Date.now by default.
  * options.idleTimeout     Idle timeout for the default cache, in milliseconds.
  * options.lifecycle       Process-like emitter carrying 'exit' for the default
  *                         cache; defaults to process.
@@ -412,6 +559,7 @@ async function desktopInput(client, args, createCapture, options) {
 function registerDesktopTools(registry, options) {
     options = options || {};
     if (options.client == null) { throw new Error('registerDesktopTools requires a client.'); }
+    const defaults = options.defaults || {};
     const createCapture = (typeof options.createCapture === 'function')
         ? options.createCapture
         : (config) => new DesktopCapture(config);
@@ -433,7 +581,7 @@ function registerDesktopTools(registry, options) {
             scale: z.number().int().min(1).max(65535).optional().describe('Maximum frame width in pixels; the capture module default is 1024.')
         },
         target: (args) => args.deviceid,
-        handler: (args) => desktopSnapshot(options.client, args, createCapture)
+        handler: (args) => desktopSnapshot(options.client, args, createCapture, defaults)
     });
 
     registry.register({
@@ -450,7 +598,7 @@ function registerDesktopTools(registry, options) {
             scale: z.number().int().min(1).max(65535).optional().describe('Maximum frame width in pixels for a newly opened session; the capture module default is 1024.')
         },
         target: (args) => args.deviceid,
-        handler: (args) => desktopFrames(cache, args)
+        handler: (args) => desktopFrames(cache, args, defaults)
     });
 
     registry.register({
@@ -463,16 +611,30 @@ function registerDesktopTools(registry, options) {
         target: (args) => args.deviceid,
         handler: (args) => desktopInput(options.client, args, createCapture, (acquireCapture != null)
             ? { capture: acquireCapture(args.deviceid) }
-            : { cache: cache })
+            : { cache: cache }, defaults)
+    });
+
+    registry.register({
+        name: 'mesh_desktop_status',
+        description: 'Report whether capturing a device\'s screen is currently possible, without opening a desktop relay session. Reports the device online state, the agent\'s desktop capability from its capability bit, the account\'s desktop relay right from the connection handshake, and whether a cached desktop session exists (with its age and encoding). A status of ready means a capture can be attempted; blocked lists the failing checks in reasons; unknown means a check cannot be evaluated, such as missing handshake rights. The device id may be a bare id or a full node id (node//...). The account\'s desktop right and the server\'s consent, privacy and recording behaviour are unchanged.',
+        inputSchema: {
+            deviceid: z.string().min(1).describe('Device id of the machine to inspect, bare or a full node id (node//...).')
+        },
+        target: (args) => args.deviceid,
+        handler: (args) => desktopStatus({ client: options.client, cache: cache, now: options.now }, args)
     });
 
     return registry;
 }
 
+
 module.exports = {
     registerDesktopTools: registerDesktopTools,
+    desktopStatus: desktopStatus,
+    resolveDesktopRight: resolveDesktopRight,
     desktopSnapshot: desktopSnapshot,
     desktopFrames: desktopFrames,
+    sessionOptionsFrom: sessionOptionsFrom,
     captureSequence: captureSequence,
     desktopInput: desktopInput,
     applyDesktopActions: applyDesktopActions,
