@@ -140,7 +140,7 @@ const ARGUMENTS = {
     devicesharing: [
         ['--id', NODE_ALPHA],
         ['--id', NODE_ALPHA, '--add', 'Guest', '--type', 'desktop,terminal', '--viewonly', '--consent', 'prompt,bar', '--start', '2026-01-01T00:00:00Z', '--end', '2026-01-01T01:00:00Z', '--port', '8443'],
-        ['--id', NODE_ALPHA, '--add', 'Guest', '--duration', '30', '--daily'],
+        ['--id', NODE_ALPHA, '--add', 'Guest', '--duration', '30', '--daily', '--start', '2026-01-01T00:00:00Z'],
         ['--id', NODE_ALPHA, '--remove', 'abc123']
     ],
     devicepower: [
