@@ -145,6 +145,47 @@ test('concurrent commands each resolve against their own response', { timeout: 1
     assert.equal(bravoResponse.nodes[MESH_BRAVO][0].name, 'host-beta');
 });
 
+test('a response that does not echo the responseid resolves by action', { timeout: 10000 }, async (t) => {
+    const server = await createServer((ws) => {
+        sendHandshake(ws);
+        ws.on('message', (raw) => {
+            const msg = JSON.parse(raw.toString());
+            if (msg.action !== 'loginTokens') return;
+            // Unsolicited events and a response without a responseid, exactly
+            // as the server answers loginTokens and report commands.
+            ws.send(JSON.stringify({ action: 'event', event: { action: 'nodeconnect' } }));
+            ws.send(JSON.stringify({ action: 'loginTokens', loginTokens: [{ name: 'ci token', tokenUser: '~t:abcdef', expire: 0 }] }));
+        });
+    });
+    t.after(() => server.close());
+
+    const client = new MeshCentralClient({ url: server.url, password: 'secret', connectTimeout: 2000, commandTimeout: 2000 });
+    t.after(() => client.close());
+    await client.connect();
+
+    const response = await client.requestByAction('loginTokens', {});
+
+    assert.equal(response.action, 'loginTokens');
+    assert.equal(response.loginTokens[0].name, 'ci token');
+});
+
+test('an action matched command that never answers rejects with a timeout error', { timeout: 10000 }, async (t) => {
+    const server = await createServer((ws) => { sendHandshake(ws); });
+    t.after(() => server.close());
+
+    const client = new MeshCentralClient({ url: server.url, password: 'secret', connectTimeout: 2000, commandTimeout: 2000 });
+    t.after(() => client.close());
+    await client.connect();
+
+    await assert.rejects(client.requestByAction('report', {}, { timeout: 120 }), (err) => {
+        assert.ok(err instanceof TimeoutError);
+        assert.equal(err.code, 'ETIMEDOUT');
+        assert.equal(err.action, 'report');
+        assert.match(err.message, /timed out after 120ms/);
+        return true;
+    });
+});
+
 test('a command that never answers rejects with a timeout error', { timeout: 10000 }, async (t) => {
     const server = await createServer((ws) => { sendHandshake(ws); });
     t.after(() => server.close());

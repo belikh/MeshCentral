@@ -116,6 +116,18 @@ test('a transport failure is surfaced verbatim', async () => {
     assert.equal(records[0].reason, 'Command "nodes" timed out after 30ms.');
 });
 
+// Account creation and editing arguments follow the word "pass" without
+// carrying a bridge credential: they set or reset the password of the account
+// being administered. The bridge's own login material still never travels
+// through tool arguments, and every other declaration stays covered by the
+// rule.
+const ACCOUNT_PASSWORD_ARGUMENTS = new Set([
+    'mesh_add_user.pass',
+    'mesh_add_user.randompass',
+    'mesh_add_user.resetpass',
+    'mesh_edit_user.resetpass'
+]);
+
 test('tool declarations take no credential arguments', async () => {
     const { server } = createServer({});
 
@@ -126,6 +138,7 @@ test('tool declarations take no credential arguments', async () => {
     for (const tool of tools) {
         const properties = Object.keys(tool.inputSchema);
         for (const property of properties) {
+            if (ACCOUNT_PASSWORD_ARGUMENTS.has(tool.name + '.' + property)) { continue; }
             assert.doesNotMatch(property, /pass|token|key|secret|credential/i, tool.name + '.' + property);
         }
     }

@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('crypto');
+
 /**
  * @description The MeshCentral command catalogue: one declarative entry per
  * command of the meshctrl CLI.
@@ -40,10 +42,14 @@
  *                                              connection handshake
  *                For a request, action may be (args) => name to pick the
  *                action per call; matchAction (true, or (args) => boolean)
- *                also resolves on a reply that quotes no responseid; and
+ *                also resolves on a reply that quotes no responseid;
+ *                byAction true resolves on a reply that omits the responseid
+ *                and must be matched on its action (login tokens, reports);
  *                resultValue: true marks a result field that carries the
- *                command's value rather than an error. An 'optional' request
- *                may fail without failing the command.
+ *                command's value rather than an error; follow
+ *                (response, args) => spec[] issues requests derived from a
+ *                response, such as one membership removal per user; and an
+ *                'optional' request may fail without failing the command.
  *   format       (value, args) => string. value is the response (single
  *                request), the ordered response array (several requests), or
  *                the handshake value (from). Returns the tool text.
@@ -266,6 +272,233 @@ function formatServerVersion(response) {
 
 function formatJson(value) {
     return JSON.stringify(value, null, 2);
+}
+
+/** Complete a bare user id with a domain the way meshctrl does. */
+function completeUserId(id, domain) {
+    if ((domain != null) && (String(id).indexOf('/') < 0)) { return 'user/' + domain + '/' + id; }
+    return String(id);
+}
+
+/** Complete a bare user group id with a domain the way meshctrl does. */
+function completeUserGroupId(id, domain) {
+    if ((domain != null) && (String(id).indexOf('/') < 0)) { return 'ugrp/' + domain + '/' + id; }
+    return String(id);
+}
+
+/**
+* Server administrator rights from the meshctrl --rights value: an exact
+* number, or a comma separated list of the names meshctrl understands.
+*/
+function siteAdminRights(args) {
+    var siteadmin = -1;
+    if (typeof args.rights == 'number') {
+        siteadmin = args.rights;
+    } else if (typeof args.rights == 'string') {
+        if (/^[0-9]+$/.test(args.rights.trim())) {
+            // A numeric value reaches meshctrl as a number; the tool schema
+            // carries it as text, so accept both spellings.
+            siteadmin = parseInt(args.rights.trim(), 10);
+        } else {
+            siteadmin = 0;
+            const srights = args.rights.toLowerCase().split(',');
+            if (srights.indexOf('full') != -1) { siteadmin = 0xFFFFFFFF; }
+            if (srights.indexOf('none') != -1) { siteadmin = 0x00000000; }
+            if ((srights.indexOf('backup') != -1) || (srights.indexOf('serverbackup') != -1)) { siteadmin |= 0x00000001; }
+            if (srights.indexOf('manageusers') != -1) { siteadmin |= 0x00000002; }
+            if ((srights.indexOf('restore') != -1) || (srights.indexOf('serverrestore') != -1)) { siteadmin |= 0x00000004; }
+            if (srights.indexOf('fileaccess') != -1) { siteadmin |= 0x00000008; }
+            if ((srights.indexOf('update') != -1) || (srights.indexOf('serverupdate') != -1)) { siteadmin |= 0x00000010; }
+            if (srights.indexOf('locked') != -1) { siteadmin |= 0x00000020; }
+            if (srights.indexOf('nonewgroups') != -1) { siteadmin |= 0x00000040; }
+            if (srights.indexOf('notools') != -1) { siteadmin |= 0x00000080; }
+            if (srights.indexOf('usergroups') != -1) { siteadmin |= 0x00000100; }
+            if (srights.indexOf('recordings') != -1) { siteadmin |= 0x00000200; }
+            if (srights.indexOf('locksettings') != -1) { siteadmin |= 0x00000400; }
+            if (srights.indexOf('allevents') != -1) { siteadmin |= 0x00000800; }
+            if (srights.indexOf('nonewdevices') != -1) { siteadmin |= 0x00001000; }
+        }
+    }
+    return siteadmin;
+}
+
+/** Device group permissions from the meshctrl addusertodevicegroup flags. */
+function deviceGroupRights(args) {
+    var rights = 0;
+    if (args.fullrights) { rights = 0xFFFFFFFF; }
+    if (args.editgroup) { rights |= 1; }
+    if (args.manageusers) { rights |= 2; }
+    if (args.managedevices) { rights |= 4; }
+    if (args.remotecontrol) { rights |= 8; }
+    if (args.agentconsole) { rights |= 16; }
+    if (args.serverfiles) { rights |= 32; }
+    if (args.wakedevices) { rights |= 64; }
+    if (args.notes) { rights |= 128; }
+    if (args.desktopviewonly) { rights |= 256; }
+    if (args.noterminal) { rights |= 512; }
+    if (args.nofiles) { rights |= 1024; }
+    if (args.noamt) { rights |= 2048; }
+    if (args.limiteddesktop) { rights |= 4096; }
+    if (args.limitedevents) { rights |= 8192; }
+    if (args.chatnotify) { rights |= 16384; }
+    if (args.uninstall) { rights |= 32768; }
+    if (args.noregistry) { rights |= 4194304; }
+    if (args.nosoftware) { rights |= 8388608; }
+    return rights;
+}
+
+/** Device permissions from the meshctrl addusertodevice flags. */
+function deviceRights(args) {
+    var rights = 0;
+    if (args.fullrights) { rights = (8 + 16 + 32 + 64 + 128 + 16384 + 32768); }
+    if (args.remotecontrol) { rights |= 8; }
+    if (args.agentconsole) { rights |= 16; }
+    if (args.serverfiles) { rights |= 32; }
+    if (args.wakedevices) { rights |= 64; }
+    if (args.notes) { rights |= 128; }
+    if (args.desktopviewonly) { rights |= 256; }
+    if (args.noterminal) { rights |= 512; }
+    if (args.nofiles) { rights |= 1024; }
+    if (args.noamt) { rights |= 2048; }
+    if (args.limiteddesktop) { rights |= 4096; }
+    if (args.limitedevents) { rights |= 8192; }
+    if (args.chatnotify) { rights |= 16384; }
+    if (args.uninstall) { rights |= 32768; }
+    if (args.noregistry) { rights |= 4194304; }
+    if (args.nosoftware) { rights |= 8388608; }
+    return rights;
+}
+
+/** Generate an Intel AMT compliant random password, as meshctrl --randompass. */
+function checkAmtPassword(p) { return (p.length > 7) && (/\d/.test(p)) && (/[a-z]/.test(p)) && (/[A-Z]/.test(p)) && (/\W/.test(p)); }
+function randomPassword() {
+    var password;
+    do { password = Buffer.from(crypto.randomBytes(9), 'binary').toString('base64').split('/').join('@'); } while (checkAmtPassword(password) == false);
+    return password;
+}
+
+/** Render the result of a mutation the way meshctrl prints it. */
+function formatActionResult(response) {
+    if (response == null) { return ''; }
+    if (response.meshid != null) { return String(response.result) + ' ' + response.meshid; }
+    if (response.userid != null) { return String(response.result) + ' ' + response.userid; }
+    return String(response.result);
+}
+
+/** Pad a login token column exactly as meshctrl's padString does. */
+function padTokenColumn(value, pad) {
+    const text = String(value);
+    const xpad = '                                                                                                         ';
+    if (text.length >= pad) { return text; }
+    return text + xpad.substring(0, pad - text.length);
+}
+
+/** Render login token listings and creations the way meshctrl prints them. */
+function formatLoginTokens(response, args) {
+    if (args.add) {
+        if (response.result != null) { return String(response.result); }
+        let text = 'New login token created.';
+        if (response.name) { text += '\nToken name: ' + response.name; }
+        if (response.created) { text += '\nCreated: ' + new Date(response.created).toLocaleString(); }
+        if (response.expire) { text += '\nExpire: ' + new Date(response.expire).toLocaleString(); }
+        if (response.tokenUser) { text += '\nUsername: ' + response.tokenUser; }
+        if (response.tokenPass) { text += '\nPassword: ' + response.tokenPass; }
+        return text;
+    }
+    const tokens = Array.isArray(response.loginTokens) ? response.loginTokens : [];
+    const lines = [
+        'Name                        Username                    Expire',
+        '-------------------------------------------------------------------------------------'
+    ];
+    if (tokens.length === 0) { lines.push('No login tokens'); return lines.join('\n'); }
+    for (const token of tokens) {
+        const expire = (token.expire === 0) ? 'Unlimited' : new Date(token.expire).toLocaleString();
+        lines.push(padTokenColumn(token.name, 28) + padTokenColumn(token.tokenUser, 28) + expire);
+    }
+    return lines.join('\n');
+}
+
+/** Render a report response as the CSV meshctrl prints. */
+function formatReport(response) {
+    const data = (response != null) ? response.data : null;
+    if ((data == null) || !Array.isArray(data.columns) || (data.groups == null)) {
+        return JSON.stringify(response, null, 2);
+    }
+    const lines = ['group,' + data.columns.flatMap((column) => column.id).join(',')];
+    for (const key of Object.keys(data.groups)) {
+        const group = data.groups[key];
+        const entries = ((group != null) && Array.isArray(group.entries)) ? group.entries : [];
+        for (const entry of entries) { lines.push(key + ',' + Object.values(entry).join(',')); }
+    }
+    return lines.join('\n');
+}
+
+/** The user group memberships to remove, in the order the server listed them. */
+function userGroupUserIds(groupId, domain) {
+    return function (response) {
+        const groups = ((response != null) && (response.ugroups != null)) ? response.ugroups : {};
+        const group = groups[completeUserGroupId(groupId, domain)];
+        if ((group == null) || (group.links == null)) { return []; }
+        return Object.keys(group.links).filter((id) => id.startsWith('user/'));
+    };
+}
+
+/** Render the result of removing every user from a user group. */
+function formatRemoveAllUsersFromUserGroup(responses, args) {
+    const groups = ((responses[0] != null) && (responses[0].ugroups != null)) ? responses[0].ugroups : {};
+    const group = groups[completeUserGroupId(args.groupid, args.domain)];
+    if (group == null) { return 'User group not found.'; }
+    const userIds = userGroupUserIds(args.groupid, args.domain)(responses[0]);
+    if (userIds.length === 0) { return 'No users in this user group.'; }
+    const lines = userIds.map((id) => 'Removing ' + id);
+    const last = responses[responses.length - 1];
+    if ((last != null) && (last.result != null)) { lines.push(String(last.result)); }
+    return lines.join('\n');
+}
+
+/** The kind of membership identifier meshctrl accepts: user, mesh or node. */
+function memberKind(id) {
+    if (String(id).startsWith('user/')) { return 'user'; }
+    if (String(id).startsWith('mesh/')) { return 'mesh'; }
+    if (String(id).startsWith('node/')) { return 'node'; }
+    return null;
+}
+
+/** The action that adds or removes one membership identifier. */
+function membershipAction(args, add) {
+    const kind = memberKind(args.id);
+    if (kind === 'user') { return add ? 'addusertousergroup' : 'removeuserfromusergroup'; }
+    if (kind === 'mesh') { return add ? 'addmeshuser' : 'removemeshuser'; }
+    if (kind === 'node') { return 'adddeviceuser'; }
+    throw new Error('The identifier must start with user/, mesh/ or node/.');
+}
+
+/** The protocol params for adding a user, device group or device to a user group. */
+function addToUserGroupParams(args) {
+    const kind = memberKind(args.id);
+    const ugrpid = completeUserGroupId(args.groupid, args.domain);
+    const rights = (args.rights != null) ? parseInt(args.rights, 10) : 0;
+    if (kind === 'user') { return { ugrpid: ugrpid, usernames: [String(args.id).split('/')[2]] }; }
+    if (kind === 'mesh') { return { meshid: args.id, userid: ugrpid, meshadmin: rights }; }
+    if (kind === 'node') { return { nodeid: args.id, userids: [ugrpid], rights: rights }; }
+    throw new Error('The identifier must start with user/, mesh/ or node/.');
+}
+
+/** The protocol params for removing a user, device group or device from a user group. */
+function removeFromUserGroupParams(args) {
+    const kind = memberKind(args.id);
+    const ugrpid = completeUserGroupId(args.groupid, args.domain);
+    if (kind === 'user') { return { ugrpid: ugrpid, userid: args.id }; }
+    if (kind === 'mesh') { return { meshid: args.id, userid: ugrpid }; }
+    if (kind === 'node') { return { nodeid: args.id, userids: [ugrpid], rights: 0, remove: true }; }
+    throw new Error('The identifier must start with user/, mesh/ or node/.');
+}
+
+/** Throw the message meshctrl prints when a device group identifier is missing. */
+function requireDeviceGroup(args) {
+    if (!args.meshid && !args.group) {
+        throw new Error("Device group identifier missing, use --id '[groupid]' or --group [groupname]");
+    }
 }
 
 /** A command declared but not yet extended with a protocol mapping or tool. */
@@ -616,15 +849,37 @@ function readAgentErrorLog() {
 const commands = [
     {
         name: 'edituser',
-        description: 'Change an existing user account: email, real name, phone, account rights and password reset. Requires account administration rights on the server.',
+        description: 'Change an existing user account: email, real name, phone number, account rights and password reset on next login. Requires account administration rights on the server.',
         family: 'admin',
-        args: [],
-        auth: null,
+        args: [
+            { name: 'userid', type: 'string', required: true, description: 'User account id (user//...) or its bare name.' },
+            { name: 'domain', type: 'string', required: false, description: 'Account domain, only for cross-domain administrators.' },
+            { name: 'email', type: 'string', required: false, description: 'New email address for the account.' },
+            { name: 'emailverified', type: 'boolean', required: false, description: 'Mark the new email address as verified.' },
+            { name: 'resetpass', type: 'boolean', required: false, description: 'Request a password reset on the next account login.' },
+            { name: 'realname', type: 'string', required: false, description: 'New real name; an empty string clears it.' },
+            { name: 'phone', type: 'string', required: false, description: 'New phone number; an empty string clears it.' },
+            { name: 'rights', type: 'string', required: false, description: 'Server permissions: none, full or a comma separated list of manageusers, serverbackup, serverrestore, serverupdate, fileaccess, locked, nonewgroups, notools, usergroups, recordings, locksettings, allevents, nonewdevices.' }
+        ],
+        auth: { user: true, rights: ['manageusers'] },
         cli: { name: 'edituser' },
-        mcp: null,
-        protocol: null,
-        format: null,
-        target: null
+        mcp: { name: 'mesh_edit_user' },
+        protocol: {
+            action: 'edituser',
+            params: (args) => {
+                const op = { userid: completeUserId(args.userid, args.domain) };
+                if (args.email) { op.email = args.email; if (args.emailverified === true) { op.emailVerified = true; } }
+                if (args.resetpass === true) { op.resetNextLogin = true; }
+                const siteadmin = siteAdminRights(args);
+                if (siteadmin != -1) { op.siteadmin = siteadmin; }
+                if (args.domain) { op.domain = args.domain; }
+                if (args.phone != null) { op.phone = args.phone; }
+                if (args.realname != null) { op.realname = args.realname; }
+                return op;
+            }
+        },
+        format: formatActionResult,
+        target: (args) => args.userid
     },
     {
         name: 'listusers',
@@ -722,7 +977,35 @@ const commands = [
         format: formatEvents,
         target: (args) => ((args.userid != null) ? args.userid : ((args.id != null) ? args.id : 'all'))
     },
-    pending('logintokens', 'List, create and remove account login tokens.', 'admin'),
+    {
+        name: 'logintokens',
+        description: 'List the login tokens of the authenticated account, create a token with a given name and lifetime, or remove a token by user name. A created token\'s username and password are returned once and cannot be retrieved again.',
+        family: 'admin',
+        args: [
+            { name: 'add', type: 'string', required: false, description: 'Create a login token with this name.' },
+            { name: 'expire', type: 'number', required: false, description: 'Minutes until the new token expires; 0 or omitted means it does not expire.' },
+            { name: 'remove', type: 'string', required: false, description: 'Remove the login token with this user name.' }
+        ],
+        auth: { user: true, rights: [] },
+        cli: { name: 'logintokens' },
+        mcp: { name: 'mesh_login_tokens' },
+        protocol: {
+            action: (args) => (args.add ? 'createLoginToken' : 'loginTokens'),
+            byAction: true,
+            params: (args) => {
+                if (args.add) {
+                    const op = { name: args.add, expire: 0 };
+                    if (args.expire) { op.expire = parseInt(args.expire, 10); }
+                    return op;
+                }
+                const op = {};
+                if (args.remove) { op.remove = [args.remove]; }
+                return op;
+            }
+        },
+        format: formatLoginTokens,
+        target: (args) => (args.add ? args.add : (args.remove ? args.remove : null))
+    },
     {
         name: 'serverinfo',
         description: 'Report the MeshCentral server information captured during the connection handshake: name, domain, ports, features and capabilities, as JSON.',
@@ -759,17 +1042,279 @@ const commands = [
         format: formatJson,
         target: null
     },
-    pending('adduser', 'Create a new user account.', 'admin'),
-    pending('removeuser', 'Delete a user account.', 'admin'),
-    pending('adddevicegroup', 'Create a new device group.', 'admin'),
-    pending('removedevicegroup', 'Delete a device group.', 'admin'),
-    pending('editdevicegroup', 'Change a device group name, description, flags, consent or invite codes.', 'admin'),
+    {
+        name: 'adduser',
+        description: 'Create a new user account with an email address, real name, phone number, server rights and an optional password reset on next login. The account password is either supplied or generated randomly.',
+        family: 'admin',
+        args: [
+            { name: 'user', type: 'string', required: true, description: 'New account name.' },
+            { name: 'pass', type: 'string', required: false, description: 'New account password; required unless randompass is set.' },
+            { name: 'randompass', type: 'boolean', required: false, description: 'Generate a random Intel AMT compliant password for the new account.' },
+            { name: 'domain', type: 'string', required: false, description: 'Account domain, only for cross-domain administrators.' },
+            { name: 'email', type: 'string', required: false, description: 'New account email address.' },
+            { name: 'emailverified', type: 'boolean', required: false, description: 'Mark the new email address as verified.' },
+            { name: 'resetpass', type: 'boolean', required: false, description: 'Request a password reset on the first account login.' },
+            { name: 'realname', type: 'string', required: false, description: 'Real name for this account.' },
+            { name: 'phone', type: 'string', required: false, description: 'Phone number for this account; an empty string clears it.' },
+            { name: 'rights', type: 'string', required: false, description: 'Server permissions: none, full or a comma separated list of manageusers, serverbackup, serverrestore, serverupdate, fileaccess, locked, nonewgroups, notools, usergroups, recordings, locksettings, allevents, nonewdevices.' }
+        ],
+        auth: { user: true, rights: ['manageusers'] },
+        cli: { name: 'adduser' },
+        mcp: { name: 'mesh_add_user' },
+        protocol: {
+            action: 'adduser',
+            params: (args) => {
+                if ((args.pass == null) && (args.randompass !== true)) {
+                    throw new Error('New account password missing, use --pass [password] or --randompass');
+                }
+                const op = { username: args.user, pass: (args.randompass === true) ? randomPassword() : args.pass };
+                if (args.email) { op.email = args.email; if (args.emailverified === true) { op.emailVerified = true; } }
+                if (args.resetpass === true) { op.resetNextLogin = true; }
+                const siteadmin = siteAdminRights(args);
+                if (siteadmin != -1) { op.siteadmin = siteadmin; }
+                if (args.domain) { op.domain = args.domain; }
+                if (args.phone != null) { op.phone = args.phone; }
+                if (args.realname != null) { op.realname = args.realname; }
+                return op;
+            }
+        },
+        format: formatActionResult,
+        target: (args) => args.user
+    },
+    {
+        name: 'removeuser',
+        description: 'Delete a user account. Requires account administration rights on the server.',
+        family: 'admin',
+        args: [
+            { name: 'userid', type: 'string', required: true, description: 'User account id (user//...) or its bare name.' },
+            { name: 'domain', type: 'string', required: false, description: 'Account domain, only for cross-domain administrators.' }
+        ],
+        auth: { user: true, rights: ['manageusers'] },
+        cli: { name: 'removeuser' },
+        mcp: { name: 'mesh_remove_user' },
+        protocol: {
+            action: 'deleteuser',
+            params: (args) => ({ userid: completeUserId(args.userid, args.domain) })
+        },
+        format: formatActionResult,
+        target: (args) => args.userid
+    },
+    {
+        name: 'adddevicegroup',
+        description: 'Create a new device group, optionally Intel AMT only or agent-less, with a description, device group features and user consent flags.',
+        family: 'admin',
+        args: [
+            { name: 'name', type: 'string', required: true, description: 'Name of the new device group.' },
+            { name: 'desc', type: 'string', required: false, description: 'New device group description.' },
+            { name: 'amtonly', type: 'boolean', required: false, description: 'Create an Intel AMT only device group (meshtype 1).' },
+            { name: 'agentless', type: 'boolean', required: false, description: 'Create an agent-less device group (meshtype 3).' },
+            { name: 'features', type: 'number', required: false, description: 'Device group features: 1 auto-remove, 2 hostname sync, 4 record sessions.' },
+            { name: 'consent', type: 'number', required: false, description: 'User consent flags: 1 desktop notify, 2 terminal notify, 4 files notify, 8 desktop prompt, 16 terminal prompt, 32 files prompt, 64 desktop toolbar.' }
+        ],
+        auth: { user: true, rights: [] },
+        cli: { name: 'adddevicegroup' },
+        mcp: { name: 'mesh_add_device_group' },
+        protocol: {
+            action: 'createmesh',
+            params: (args) => {
+                const op = { meshname: args.name, meshtype: 2 };
+                if (args.desc) { op.desc = args.desc; }
+                if (args.amtonly) { op.meshtype = 1; }
+                if (args.agentless) { op.meshtype = 3; }
+                if (args.features) { op.flags = parseInt(args.features, 10); }
+                if (args.consent) { op.consent = parseInt(args.consent, 10); }
+                return op;
+            }
+        },
+        format: formatActionResult,
+        target: (args) => args.name
+    },
+    {
+        name: 'removedevicegroup',
+        description: 'Delete a device group and every device record in it, named by group id or group name.',
+        family: 'admin',
+        args: [
+            { name: 'meshid', type: 'string', required: false, cli: 'id', description: 'Device group id (mesh//...).' },
+            { name: 'group', type: 'string', required: false, description: 'Device group name.' }
+        ],
+        auth: { user: true, rights: [] },
+        cli: { name: 'removedevicegroup' },
+        mcp: { name: 'mesh_remove_device_group' },
+        protocol: {
+            action: 'deletemesh',
+            params: (args) => {
+                requireDeviceGroup(args);
+                const op = {};
+                if (args.meshid) { op.meshid = args.meshid; } else if (args.group) { op.meshname = args.group; }
+                return op;
+            }
+        },
+        format: formatActionResult,
+        target: (args) => ((args.meshid != null) ? args.meshid : args.group)
+    },
+    {
+        name: 'editdevicegroup',
+        description: 'Change a device group named by id or name: rename it, set or clear its description, set its flags and consent options, and set invite codes with an optional background-only or interactive-only mode.',
+        family: 'admin',
+        args: [
+            { name: 'meshid', type: 'string', required: false, cli: 'id', description: 'Device group id (mesh//...).' },
+            { name: 'group', type: 'string', required: false, description: 'Device group name.' },
+            { name: 'name', type: 'string', required: false, description: 'New device group name.' },
+            { name: 'desc', type: 'string', required: false, description: 'New description; an empty string clears it.' },
+            { name: 'flags', type: 'number', required: false, description: 'Device group flags: 1 auto-remove device on disconnect, 2 sync hostname; 0 for none.' },
+            { name: 'consent', type: 'number', required: false, description: 'User consent flags: 1 desktop notify, 2 terminal notify, 4 files notify, 8 desktop prompt, 16 terminal prompt, 32 files prompt, 64 desktop toolbar; 0 for none.' },
+            { name: 'invitecodes', type: 'string', required: false, description: 'Comma separated invite codes to set.' },
+            { name: 'backgroundonly', type: 'boolean', required: false, description: 'With invitecodes, install the agent in the background only.' },
+            { name: 'interactiveonly', type: 'boolean', required: false, description: 'With invitecodes, run the agent on demand only.' }
+        ],
+        auth: { user: true, rights: [] },
+        cli: { name: 'editdevicegroup' },
+        mcp: { name: 'mesh_edit_device_group' },
+        protocol: {
+            action: 'editmesh',
+            params: (args) => {
+                requireDeviceGroup(args);
+                const op = {};
+                if (args.meshid) { op.meshid = args.meshid; } else if (args.group) { op.meshidname = args.group; }
+                if ((typeof args.name == 'string') && (args.name != '')) { op.meshname = args.name; }
+                if (args.desc != null) { op.desc = args.desc; }
+                if (args.invitecodes != null) {
+                    const codes = String(args.invitecodes).split(',').filter((code) => code.length > 0);
+                    if (codes.length > 0) {
+                        op.invite = { codes: codes, flags: 0 };
+                        if (args.backgroundonly === true) { op.invite.flags = 2; }
+                        else if (args.interactiveonly === true) { op.invite.flags = 1; }
+                    }
+                }
+                if (args.flags != null) { op.flags = parseInt(args.flags, 10); }
+                if (args.consent != null) { op.consent = parseInt(args.consent, 10); }
+                return op;
+            }
+        },
+        format: formatActionResult,
+        target: (args) => ((args.meshid != null) ? args.meshid : args.group)
+    },
     pending('broadcast', 'Display a message to all online users, or to a single user account.', 'device'),
     pending('showevents', 'Stream server events for the account as JSON until interrupted.', 'inspection'),
-    pending('addusertodevicegroup', 'Grant a user account permissions on a device group.', 'admin'),
-    pending('removeuserfromdevicegroup', 'Remove a user account from a device group.', 'admin'),
-    pending('addusertodevice', 'Grant a user account permissions on a single device.', 'admin'),
-    pending('removeuserfromdevice', 'Remove a user account from a single device.', 'admin'),
+    {
+        name: 'addusertodevicegroup',
+        description: 'Grant a user account permissions on a device group. The per-group rights are the sum of the selected flags; fullrights grants every right.',
+        family: 'admin',
+        args: [
+            { name: 'meshid', type: 'string', required: false, cli: 'id', description: 'Device group id (mesh//...).' },
+            { name: 'group', type: 'string', required: false, description: 'Device group name.' },
+            { name: 'userid', type: 'string', required: true, description: 'User account id (user//...).' },
+            { name: 'fullrights', type: 'boolean', required: false, description: 'Grant full rights over this device group.' },
+            { name: 'editgroup', type: 'boolean', required: false, description: 'Allow editing group information.' },
+            { name: 'manageusers', type: 'boolean', required: false, description: 'Allow adding and removing users.' },
+            { name: 'managedevices', type: 'boolean', required: false, description: 'Allow editing device information.' },
+            { name: 'remotecontrol', type: 'boolean', required: false, description: 'Allow remote control operations.' },
+            { name: 'agentconsole', type: 'boolean', required: false, description: 'Allow agent console operations.' },
+            { name: 'serverfiles', type: 'boolean', required: false, description: 'Allow access to group server files.' },
+            { name: 'wakedevices', type: 'boolean', required: false, description: 'Allow device wake operations.' },
+            { name: 'notes', type: 'boolean', required: false, description: 'Allow setting device notes.' },
+            { name: 'desktopviewonly', type: 'boolean', required: false, description: 'Restrict the desktop to view only.' },
+            { name: 'noterminal', type: 'boolean', required: false, description: 'Deny terminal access.' },
+            { name: 'nofiles', type: 'boolean', required: false, description: 'Deny file access.' },
+            { name: 'noamt', type: 'boolean', required: false, description: 'Deny Intel AMT access.' },
+            { name: 'limiteddesktop', type: 'boolean', required: false, description: 'Restrict desktop input.' },
+            { name: 'limitedevents', type: 'boolean', required: false, description: 'Limit event visibility.' },
+            { name: 'chatnotify', type: 'boolean', required: false, description: 'Allow chat and notifications.' },
+            { name: 'uninstall', type: 'boolean', required: false, description: 'Allow uninstalling the agent.' },
+            { name: 'noregistry', type: 'boolean', required: false, description: 'Deny registry access.' },
+            { name: 'nosoftware', type: 'boolean', required: false, description: 'Deny software access.' }
+        ],
+        auth: { user: true, rights: ['manageusers'] },
+        cli: { name: 'addusertodevicegroup' },
+        mcp: { name: 'mesh_add_user_to_device_group' },
+        protocol: {
+            action: 'addmeshuser',
+            params: (args) => {
+                requireDeviceGroup(args);
+                const op = { userids: [args.userid], meshadmin: deviceGroupRights(args) };
+                if (args.meshid) { op.meshid = args.meshid; } else if (args.group) { op.meshname = args.group; }
+                return op;
+            }
+        },
+        format: formatActionResult,
+        target: (args) => args.userid
+    },
+    {
+        name: 'removeuserfromdevicegroup',
+        description: 'Remove a user account from a device group, named by group id or group name.',
+        family: 'admin',
+        args: [
+            { name: 'meshid', type: 'string', required: false, cli: 'id', description: 'Device group id (mesh//...).' },
+            { name: 'group', type: 'string', required: false, description: 'Device group name.' },
+            { name: 'userid', type: 'string', required: true, description: 'User account id (user//...).' }
+        ],
+        auth: { user: true, rights: ['manageusers'] },
+        cli: { name: 'removeuserfromdevicegroup' },
+        mcp: { name: 'mesh_remove_user_from_device_group' },
+        protocol: {
+            action: 'removemeshuser',
+            params: (args) => {
+                requireDeviceGroup(args);
+                const op = { userid: args.userid };
+                if (args.meshid) { op.meshid = args.meshid; } else if (args.group) { op.meshname = args.group; }
+                return op;
+            }
+        },
+        format: formatActionResult,
+        target: (args) => args.userid
+    },
+    {
+        name: 'addusertodevice',
+        description: 'Grant a user account permissions on a single device. The device rights are the sum of the selected flags; fullrights grants the standard remote device rights.',
+        family: 'admin',
+        args: [
+            { name: 'id', type: 'string', required: true, description: 'Device id (node//...).' },
+            { name: 'userid', type: 'string', required: true, description: 'User account id (user//...).' },
+            { name: 'fullrights', type: 'boolean', required: false, description: 'Grant the standard full remote device rights.' },
+            { name: 'remotecontrol', type: 'boolean', required: false, description: 'Allow remote control operations.' },
+            { name: 'agentconsole', type: 'boolean', required: false, description: 'Allow agent console operations.' },
+            { name: 'serverfiles', type: 'boolean', required: false, description: 'Allow file access.' },
+            { name: 'wakedevices', type: 'boolean', required: false, description: 'Allow device wake operations.' },
+            { name: 'notes', type: 'boolean', required: false, description: 'Allow setting device notes.' },
+            { name: 'desktopviewonly', type: 'boolean', required: false, description: 'Restrict the desktop to view only.' },
+            { name: 'noterminal', type: 'boolean', required: false, description: 'Deny terminal access.' },
+            { name: 'nofiles', type: 'boolean', required: false, description: 'Deny file access.' },
+            { name: 'noamt', type: 'boolean', required: false, description: 'Deny Intel AMT access.' },
+            { name: 'limiteddesktop', type: 'boolean', required: false, description: 'Restrict desktop input.' },
+            { name: 'limitedevents', type: 'boolean', required: false, description: 'Limit event visibility.' },
+            { name: 'chatnotify', type: 'boolean', required: false, description: 'Allow chat and notifications.' },
+            { name: 'uninstall', type: 'boolean', required: false, description: 'Allow uninstalling the agent.' },
+            { name: 'noregistry', type: 'boolean', required: false, description: 'Deny registry access.' },
+            { name: 'nosoftware', type: 'boolean', required: false, description: 'Deny software access.' }
+        ],
+        auth: { user: true, rights: ['manageusers'] },
+        cli: { name: 'addusertodevice' },
+        mcp: { name: 'mesh_add_user_to_device' },
+        protocol: {
+            action: 'adddeviceuser',
+            params: (args) => ({ nodeid: args.id, usernames: [args.userid], rights: deviceRights(args) })
+        },
+        format: formatActionResult,
+        target: (args) => args.userid
+    },
+    {
+        name: 'removeuserfromdevice',
+        description: 'Remove a user account from a single device.',
+        family: 'admin',
+        args: [
+            { name: 'id', type: 'string', required: true, description: 'Device id (node//...).' },
+            { name: 'userid', type: 'string', required: true, description: 'User account id (user//...).' }
+        ],
+        auth: { user: true, rights: ['manageusers'] },
+        cli: { name: 'removeuserfromdevice' },
+        mcp: { name: 'mesh_remove_user_from_device' },
+        protocol: {
+            action: 'adddeviceuser',
+            params: (args) => ({ nodeid: args.id, usernames: [args.userid], rights: 0, remove: true })
+        },
+        format: formatActionResult,
+        target: (args) => args.userid
+    },
     pending('sendinviteemail', 'Send an agent installation invitation email for a device group.', 'device'),
     pending('generateinvitelink', 'Create an agent installation invitation link for a device group.', 'device'),
     pending('config', 'Show or change the local config.json file (domains and domain values).', 'local'),
@@ -797,7 +1342,30 @@ const commands = [
     pending('editdevice', 'Change a device name, description, tags, icon or consent flags.', 'device'),
     pending('addlocaldevice', 'Add a local (non-agent) device entry.', 'device'),
     pending('addamtdevice', 'Add an Intel AMT device.', 'device'),
-    pending('addusergroup', 'Create a new user group.', 'admin'),
+    {
+        name: 'addusergroup',
+        description: 'Create a new user group with an optional description, only through an account with user group administration rights.',
+        family: 'admin',
+        args: [
+            { name: 'name', type: 'string', required: true, description: 'Name of the user group.' },
+            { name: 'desc', type: 'string', required: false, description: 'User group description.' },
+            { name: 'domain', type: 'string', required: false, description: 'User group domain, only for cross-domain administrators.' }
+        ],
+        auth: { user: true, rights: ['usergroups'] },
+        cli: { name: 'addusergroup' },
+        mcp: { name: 'mesh_add_user_group' },
+        protocol: {
+            action: 'createusergroup',
+            params: (args) => {
+                const op = { name: args.name };
+                if (args.desc != null) { op.desc = args.desc; }
+                if (args.domain) { op.domain = args.domain; }
+                return op;
+            }
+        },
+        format: formatActionResult,
+        target: (args) => args.name
+    },
     {
         name: 'listusergroups',
         description: 'List user groups visible to the authenticated account, as JSON, including each group\'s linked users, device groups and devices.',
@@ -810,7 +1378,24 @@ const commands = [
         format: formatUserGroups,
         target: null
     },
-    pending('removeusergroup', 'Delete a user group.', 'admin'),
+    {
+        name: 'removeusergroup',
+        description: 'Delete a user group, named by its user group id.',
+        family: 'admin',
+        args: [
+            { name: 'groupid', type: 'string', required: true, description: 'User group id (ugrp//...).' },
+            { name: 'domain', type: 'string', required: false, description: 'User group domain, only for cross-domain administrators.' }
+        ],
+        auth: { user: true, rights: ['usergroups'] },
+        cli: { name: 'removeusergroup' },
+        mcp: { name: 'mesh_remove_user_group' },
+        protocol: {
+            action: 'deleteusergroup',
+            params: (args) => ({ ugrpid: completeUserGroupId(args.groupid, args.domain) })
+        },
+        format: formatActionResult,
+        target: (args) => args.groupid
+    },
     {
         name: 'runcommand',
         description: 'Run a shell command on a remote device. By default the server accepts the command and returns immediately; with reply true the call waits for the command to finish and returns its collected output. A reply wait is bounded by the bridge per-command timeout (default 30 seconds, configured with --commandtimeout); a timeout is reported verbatim.',
@@ -913,9 +1498,71 @@ const commands = [
         format: () => 'Toast notification sent to the device.',
         target: (args) => args.id
     },
-    pending('addtousergroup', 'Add a user, device or device group to a user group.', 'admin'),
-    pending('removefromusergroup', 'Remove a user, device or device group from a user group.', 'admin'),
-    pending('removeallusersfromusergroup', 'Remove every user from a user group.', 'admin'),
+    {
+        name: 'addtousergroup',
+        description: 'Add a user account (user//...), device group (mesh//...) or device (node//...) to a user group, with optional device group or device rights.',
+        family: 'admin',
+        args: [
+            { name: 'id', type: 'string', required: true, description: 'Identifier to add: user//... adds a user account, mesh//... adds a device group, node//... adds a device.' },
+            { name: 'groupid', type: 'string', required: true, description: 'User group id (ugrp//...).' },
+            { name: 'rights', type: 'number', required: false, description: 'Rights granted for a device group or device, as a number such as 4294967295 for full administrator.' }
+        ],
+        auth: { user: true, rights: ['usergroups'] },
+        cli: { name: 'addtousergroup' },
+        mcp: { name: 'mesh_add_to_user_group' },
+        protocol: {
+            action: (args) => membershipAction(args, true),
+            params: addToUserGroupParams
+        },
+        format: formatActionResult,
+        target: (args) => args.id
+    },
+    {
+        name: 'removefromusergroup',
+        description: 'Remove a user account (user//...), device group (mesh//...) or device (node//...) from a user group.',
+        family: 'admin',
+        args: [
+            { name: 'id', type: 'string', required: true, description: 'Identifier to remove: user//..., mesh//... or node//....' },
+            { name: 'groupid', type: 'string', required: true, description: 'User group id (ugrp//...).' }
+        ],
+        auth: { user: true, rights: ['usergroups'] },
+        cli: { name: 'removefromusergroup' },
+        mcp: { name: 'mesh_remove_from_user_group' },
+        protocol: {
+            action: (args) => membershipAction(args, false),
+            params: removeFromUserGroupParams
+        },
+        format: formatActionResult,
+        target: (args) => args.id
+    },
+    {
+        name: 'removeallusersfromusergroup',
+        description: 'Remove every user account from a user group in one operation, leaving device groups and devices in place.',
+        family: 'admin',
+        args: [
+            { name: 'groupid', type: 'string', required: true, description: 'User group id (ugrp//...).' },
+            { name: 'domain', type: 'string', required: false, description: 'User group domain, only for cross-domain administrators.' }
+        ],
+        auth: { user: true, rights: ['usergroups'] },
+        cli: { name: 'removeallusersfromusergroup' },
+        mcp: { name: 'mesh_remove_all_users_from_user_group' },
+        protocol: [
+            {
+                action: 'usergroups',
+                byAction: true,
+                params: () => ({}),
+                follow: (response, args) => {
+                    const ugrpid = completeUserGroupId(args.groupid, args.domain);
+                    return userGroupUserIds(args.groupid, args.domain)(response).map((userid) => ({
+                        action: 'removeuserfromusergroup',
+                        params: () => ({ ugrpid: ugrpid, userid: userid })
+                    }));
+                }
+            }
+        ],
+        format: formatRemoveAllUsersFromUserGroup,
+        target: (args) => args.groupid
+    },
     {
         name: 'devicesharing',
         description: 'View, add and remove sharing links for a device. With add a new guest sharing link is created and its identifier and URL returned; with remove a link is deleted; with neither the existing links are listed. Recurring links take a duration in minutes; time limited links take a start and end time, or a start and duration.',
@@ -998,7 +1645,54 @@ const commands = [
         format: formatAgentDownload,
         target: (args) => args.id
     },
-    pending('report', 'Create and show a CSV report (sessions, traffic, logins or database).', 'admin'),
+    {
+        name: 'report',
+        description: 'Create and show a CSV report: sessions, traffic, logins or database records. The period defaults to the last 24 hours, or the last week when grouped by day. The database report requires full administrator rights.',
+        family: 'admin',
+        args: [
+            { name: 'type', type: 'string', required: true, description: 'Report type: sessions, traffic, logins or db.' },
+            { name: 'start', type: 'string', required: false, description: 'Start of the report period, an ISO date-time; defaults to the last 24 hours, or the last week when grouped by day.' },
+            { name: 'end', type: 'string', required: false, description: 'End of the report period, an ISO date-time; defaults to now.' },
+            { name: 'groupby', type: 'string', required: false, description: 'How to group the results: user (default), day or device.' },
+            { name: 'devicegroup', type: 'string', required: false, description: 'Restrict the report to this device group id (sessions report).' },
+            { name: 'showtraffic', type: 'boolean', required: false, description: 'Add traffic columns to a sessions report.' }
+        ],
+        auth: { user: true, rights: [] },
+        cli: { name: 'report' },
+        mcp: { name: 'mesh_report' },
+        protocol: {
+            action: 'report',
+            byAction: true,
+            params: (args) => {
+                let reporttype = 1;
+                if (args.type === 'traffic') { reporttype = 2; }
+                else if (args.type === 'logins') { reporttype = 3; }
+                else if (args.type === 'db') { reporttype = 4; }
+                let groupby = 1;
+                if (args.groupby === 'device') { groupby = 2; }
+                else if (args.groupby === 'day') { groupby = 3; }
+                const now = Math.round(new Date().getTime() / 1000);
+                const start = (args.start != null)
+                    ? Math.floor(Date.parse(args.start) / 1000)
+                    : ((groupby === 3) ? now - (168 * 3600) : now - (24 * 3600));
+                const end = (args.end != null) ? Math.floor(Date.parse(args.end) / 1000) : now;
+                if (end <= start) { throw new Error('End time must be ahead of start time.'); }
+                return {
+                    type: reporttype,
+                    groupBy: groupby,
+                    devGroup: args.devicegroup || null,
+                    start: start,
+                    end: end,
+                    tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                    tf: new Date().getTimezoneOffset(),
+                    showTraffic: (typeof args.showtraffic != 'undefined'),
+                    l: 'en'
+                };
+            }
+        },
+        format: formatReport,
+        target: (args) => (args.devicegroup || args.type)
+    },
     pending('grouptoast', 'Display a toast notification on every device in a device group.', 'device'),
     pending('groupmessage', 'Display a message box on every device in a device group.', 'device'),
     {

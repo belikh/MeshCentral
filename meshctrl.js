@@ -1987,7 +1987,7 @@ function serverConnect() {
                 }                    
                 if (end <= start) { console.log("End time must be ahead of start time."); process.exit(1); return; }
                 
-                client.send(JSON.stringify({ action: 'report', type: reporttype, groupBy: reportgroupby, devGroup: args.devicegroup || null, start, end, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, tf: new Date().getTimezoneOffset(), showTraffic: args.hasOwnProperty('showtraffic'), l: 'en', responseid: 'meshctrl' }));
+                client.send(JSON.stringify({ action: 'report', type: reporttype, groupBy: reportgroupby, devGroup: args.devicegroup || null, start, end, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, tf: new Date().getTimezoneOffset(), showTraffic: (typeof args.showtraffic != 'undefined'), l: 'en', responseid: 'meshctrl' }));
                 break;
             }
         }

@@ -12,8 +12,11 @@
  * entry's formatter. Server errors are surfaced verbatim.
  *
  * Later tickets expose the device action and administrative command families
- * by extending their catalogue entries; the execution forms here (control
- * request, client method, local handler) are generic and stay unchanged.
+ * by extending their catalogue entries. A command whose protocol depends on
+ * its arguments, whose server response carries no responseid, or which fans
+ * out over a response declares that in the entry; the execution forms here
+ * (control request, client method, local handler) are generic and stay
+ * unchanged.
  *
  * @author Jupiter Belic
  * @license Apache-2.0
@@ -68,6 +71,13 @@ function isServerError(response) {
 *   action: (args) => name    pick the action per call (power, sharing)
 *   matchAction: true         the server quotes no responseid; match by action
 *                             (a function of args selects it per call)
+*   byAction: true            the server response does not echo the responseid
+*                             and must be correlated on its action instead
+*                             (login tokens, reports)
+*   follow: (response, args) => spec[]    requests derived from a response,
+*                             such as one membership removal per user in a
+*                             user group; their responses append to the
+*                             ordered response array
 *   resultValue: true         the response's result field is the command's
 *                             value, not an error; the format must surface any
 *                             server rejection it can recognise
@@ -94,27 +104,35 @@ async function executeProtocol(client, entry, args) {
 
     const specs = Array.isArray(protocol) ? protocol : [protocol];
     const responses = [];
-    for (const spec of specs) {
+    const run = async (spec) => {
         const action = (typeof spec.action === 'function') ? spec.action(args) : spec.action;
+        const params = (spec.params != null) ? spec.params(args) : {};
         const matchAction = (typeof spec.matchAction === 'function') ? (spec.matchAction(args) === true) : (spec.matchAction === true);
-        const options = matchAction ? { matchAction: true } : undefined;
         let response = null;
         try {
-            response = await client.request(action, (spec.params != null) ? spec.params(args) : {}, options);
+            if (spec.byAction === true) {
+                response = await client.requestByAction(action, params);
+            } else {
+                response = await client.request(action, params, matchAction ? { matchAction: true } : undefined);
+            }
         } catch (error) {
-            if (spec.optional) { responses.push(null); continue; }
+            if (spec.optional) { responses.push(null); return; }
             throw error;
         }
         if (response == null) {
-            if (spec.optional) { responses.push(null); continue; }
+            if (spec.optional) { responses.push(null); return; }
             throw new Error('The MeshCentral server returned no response for the ' + action + ' action.');
         }
         if ((spec.resultValue !== true) && isServerError(response)) {
-            if (spec.optional) { responses.push(null); continue; }
+            if (spec.optional) { responses.push(null); return; }
             throw new Error(String(response.result));
         }
         responses.push(response);
-    }
+        if (typeof spec.follow === 'function') {
+            for (const followed of (spec.follow(response, args) || [])) { await run(followed); }
+        }
+    };
+    for (const spec of specs) { await run(spec); }
     return Array.isArray(protocol) ? responses : responses[0];
 }
 

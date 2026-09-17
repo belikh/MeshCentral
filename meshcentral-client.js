@@ -460,6 +460,55 @@ class MeshCentralClient extends EventEmitter {
         });
     }
 
+    /**
+    * Send one command and resolve with the first response carrying the same
+    * action. Some server responses do not echo the request's responseid
+    * (login token listings, reports), so they cannot be correlated by
+    * responseid; this matches them on action instead. Options: timeout (ms,
+    * 0 disables). Rejects with TimeoutError, ConnectionError or AuthError.
+    */
+    requestByAction(action, params, options) {
+        params = params || {};
+        options = options || {};
+        if ((this.ws == null) || !this.transportOpen) {
+            return Promise.reject(new ConnectionError('Not connected to ' + this.controlUrl + '.', 'ENOTCONNECTED'));
+        }
+        const timeout = (options.timeout != null) ? options.timeout : this.commandTimeout;
+        return new Promise((resolve, reject) => {
+            let timer = null, finished = false;
+            const cleanup = () => {
+                this.removeListener('message', onMessage);
+                this.removeListener('close', onClose);
+                if (timer != null) { clearTimeout(timer); }
+            };
+            const settle = (error, value) => {
+                if (finished) { return; }
+                finished = true;
+                cleanup();
+                if (error != null) { reject(error); } else { resolve(value); }
+            };
+            const onMessage = (raw) => {
+                let data = null;
+                try { data = JSON.parse(raw.toString()); } catch (ex) { return; }
+                if ((data != null) && (data.action === action)) { settle(null, data); }
+            };
+            const onClose = () => { settle(new ConnectionError('Connection closed while waiting for a response.', 'ECLOSED')); };
+            if (timeout > 0) {
+                timer = setTimeout(() => {
+                    settle(new TimeoutError('Command "' + action + '" timed out after ' + timeout + 'ms.', 'ETIMEDOUT', action, timeout));
+                }, timeout);
+                if (timer.unref) { timer.unref(); }
+            }
+            this.on('message', onMessage);
+            this.once('close', onClose);
+            try {
+                this.send(Object.assign({}, params, { action: action, responseid: this.newResponseId() }));
+            } catch (ex) {
+                settle(ex);
+            }
+        });
+    }
+
     /** Send a raw string or object on the control connection. */
     send(message) {
         if ((this.ws == null) || (this.ws.readyState !== WebSocket.OPEN)) {
