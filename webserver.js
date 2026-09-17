@@ -530,7 +530,11 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
         if (name.startsWith('~t:')) {
             // Login token, verified with the same checks as the /mcp endpoint
             loginToken.verifyLoginToken(loginTokenServices, { tokenUser: name, tokenPass: pass }).then(function (verified) {
-                if (verified == null) { fn(new Error('invalid login token')); return; }
+                if ((verified == null) || (verified.ok !== true)) {
+                    if ((verified != null) && (verified.reason === 'locked')) { fn('locked'); return; }
+                    fn(new Error('invalid login token'));
+                    return;
+                }
 
                 // Successful login token authentication
                 var loginOptions = { tokenName: verified.loginToken.name, tokenUser: verified.loginToken.tokenUser };

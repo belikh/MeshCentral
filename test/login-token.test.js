@@ -37,40 +37,40 @@ function makeServices() {
 
 test('a valid credential resolves to the record and the owning user', async () => {
     const { services, state } = makeServices();
-    assert.deepEqual(await verifyLoginToken(services, CREDENTIAL), { loginToken: state.token, user: state.user });
+    assert.deepEqual(await verifyLoginToken(services, CREDENTIAL), { ok: true, loginToken: state.token, user: state.user });
 });
 
-test('wrong password, unknown token and expired token are rejected', async () => {
+test('wrong password, unknown token and expired token are rejected as invalid', async () => {
     const { services, state } = makeServices();
     state.hash = 'different-hash';
-    assert.equal(await verifyLoginToken(services, CREDENTIAL), null);
+    assert.deepEqual(await verifyLoginToken(services, CREDENTIAL), { ok: false, reason: 'invalid' });
     state.hash = 'hash-ok';
     state.token = null;
-    assert.equal(await verifyLoginToken(services, CREDENTIAL), null);
+    assert.deepEqual(await verifyLoginToken(services, CREDENTIAL), { ok: false, reason: 'invalid' });
     state.token = { _id: 'logintoken-' + TOKEN_USER, tokenUser: TOKEN_USER, userid: 'user//alpha', name: 'Agent laptop', salt: 'salt', hash: 'hash-ok', expire: 999 };
-    assert.equal(await verifyLoginToken(services, CREDENTIAL), null);
+    assert.deepEqual(await verifyLoginToken(services, CREDENTIAL), { ok: false, reason: 'invalid' });
 });
 
 test('the injected clock decides expiry and expire 0 never expires', async () => {
     const { services, state } = makeServices();
     state.token.expire = 1001;
-    assert.deepEqual(await verifyLoginToken(services, CREDENTIAL), { loginToken: state.token, user: state.user });
+    assert.deepEqual(await verifyLoginToken(services, CREDENTIAL), { ok: true, loginToken: state.token, user: state.user });
     state.token.expire = 1000;
-    assert.deepEqual(await verifyLoginToken(services, CREDENTIAL), { loginToken: state.token, user: state.user });
+    assert.deepEqual(await verifyLoginToken(services, CREDENTIAL), { ok: true, loginToken: state.token, user: state.user });
     state.token.expire = 999;
-    assert.equal(await verifyLoginToken(services, CREDENTIAL), null);
+    assert.deepEqual(await verifyLoginToken(services, CREDENTIAL), { ok: false, reason: 'invalid' });
     state.token.expire = 0;
     state.now = Number.MAX_SAFE_INTEGER;
-    assert.deepEqual(await verifyLoginToken(services, CREDENTIAL), { loginToken: state.token, user: state.user });
+    assert.deepEqual(await verifyLoginToken(services, CREDENTIAL), { ok: true, loginToken: state.token, user: state.user });
 });
 
-test('a missing or locked account is rejected', async () => {
+test('a missing account is invalid; a locked account is distinguishable', async () => {
     const { services, state } = makeServices();
     state.user = null;
-    assert.equal(await verifyLoginToken(services, CREDENTIAL), null);
+    assert.deepEqual(await verifyLoginToken(services, CREDENTIAL), { ok: false, reason: 'invalid' });
     const { services: second, state: secondState } = makeServices();
     secondState.user = { _id: 'user//alpha', name: 'Alpha', siteadmin: SITERIGHT_LOCKED };
-    assert.equal(await verifyLoginToken(second, CREDENTIAL), null);
+    assert.deepEqual(await verifyLoginToken(second, CREDENTIAL), { ok: false, reason: 'locked' });
 });
 
 test('the locked site right is named and admins are exempt', () => {
@@ -86,10 +86,10 @@ test('the locked site right is named and admins are exempt', () => {
 
 test('a malformed credential is rejected without touching the services', async () => {
     const { services } = makeServices();
-    assert.equal(await verifyLoginToken(services, null), null);
-    assert.equal(await verifyLoginToken(services, {}), null);
-    assert.equal(await verifyLoginToken(services, { tokenUser: TOKEN_USER }), null);
-    assert.equal(await verifyLoginToken(services, { tokenPass: TOKEN_PASS }), null);
+    assert.deepEqual(await verifyLoginToken(services, null), { ok: false, reason: 'invalid' });
+    assert.deepEqual(await verifyLoginToken(services, {}), { ok: false, reason: 'invalid' });
+    assert.deepEqual(await verifyLoginToken(services, { tokenUser: TOKEN_USER }), { ok: false, reason: 'invalid' });
+    assert.deepEqual(await verifyLoginToken(services, { tokenPass: TOKEN_PASS }), { ok: false, reason: 'invalid' });
 });
 
 test('service failures propagate so callers can fail closed', async () => {

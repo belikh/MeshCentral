@@ -56,7 +56,7 @@ function createLoginTokenAuthenticator(services) {
         } catch (error) {
             return null;
         }
-        if (verified == null) { return null; }
+        if ((verified == null) || (verified.ok !== true)) { return null; }
 
         return {
             userid: verified.user._id,

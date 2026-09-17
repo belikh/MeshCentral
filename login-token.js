@@ -42,28 +42,30 @@ function validateServices(services) {
 /**
 * Resolve a login-token credential pair to its record and owning user.
 *
-* Returns Promise<{ loginToken, user }|null>; null when the record is missing,
-* expired, the password does not match, or the user is missing or locked.
-* Errors from the services propagate so callers fail closed on their own terms.
+* Returns Promise<{ ok: true, loginToken, user } | { ok: false, reason }>
+* where reason is 'invalid' (missing/expired record, password mismatch,
+* missing user) or 'locked' (the user carries the locked site right, so the
+* login form can say so). Errors from the services propagate so callers fail
+* closed on their own terms.
 */
 async function verifyLoginToken(services, credential) {
     validateServices(services);
-    if ((credential == null) || (typeof credential.tokenUser !== 'string') || (typeof credential.tokenPass !== 'string')) { return null; }
+    if ((credential == null) || (typeof credential.tokenUser !== 'string') || (typeof credential.tokenPass !== 'string')) { return { ok: false, reason: 'invalid' }; }
 
     const loginToken = await services.getLoginToken(credential.tokenUser);
-    if (loginToken == null) { return null; }
+    if (loginToken == null) { return { ok: false, reason: 'invalid' }; }
 
     const clock = (typeof services.clock === 'function') ? services.clock : Date.now;
-    if ((loginToken.expire != 0) && (loginToken.expire < clock())) { return null; }
+    if ((loginToken.expire != 0) && (loginToken.expire < clock())) { return { ok: false, reason: 'invalid' }; }
 
     const hash = await services.hashPassword(credential.tokenPass, loginToken.salt);
-    if (hash !== loginToken.hash) { return null; }
+    if (hash !== loginToken.hash) { return { ok: false, reason: 'invalid' }; }
 
     const user = await services.getUser(loginToken.userid);
-    if (user == null) { return null; }
-    if (isUserLocked(user)) { return null; }
+    if (user == null) { return { ok: false, reason: 'invalid' }; }
+    if (isUserLocked(user)) { return { ok: false, reason: 'locked' }; }
 
-    return { loginToken: loginToken, user: user };
+    return { ok: true, loginToken: loginToken, user: user };
 }
 
 module.exports = {
