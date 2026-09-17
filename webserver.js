@@ -55,6 +55,9 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
     obj.interceptor = require('./interceptor');
     obj.uaparser = require('ua-parser-js');
     obj.uaclienthints = require('ua-client-hints-js');
+    obj.mcpAuth = require('./mcp-auth.js');
+    obj.mcpHttp = require('./mcp-http.js');
+    obj.meshCentralClient = require('./meshcentral-client.js');
     const constants = (obj.crypto.constants ? obj.crypto.constants : require('constants')); // require('constants') is deprecated in Node 11.10, use require('crypto').constants instead.
 
     // Setup WebAuthn / FIDO2
@@ -7382,6 +7385,36 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
                 parent.pluginHandler.callHook('hook_setupHttpHandlers', obj, parent);
             }
             if (parent.multiServer != null) { obj.app.ws('/meshserver.ashx', function (ws, req) { parent.multiServer.CreatePeerInServer(parent.multiServer, ws, req, obj.args.tlsoffload == null); }); }
+
+            // MCP endpoint on the existing listener: always on, authenticated by login token
+            const mcpAuthenticate = obj.mcpAuth.createLoginTokenAuthenticator({
+                getLoginToken: (tokenUser) => new Promise((resolve) => {
+                    obj.db.Get('logintoken-' + tokenUser, function (err, docs) {
+                        resolve(((err == null) && (docs != null) && (docs.length === 1)) ? docs[0] : null);
+                    });
+                }),
+                hashPassword: (password, salt) => new Promise((resolve, reject) => {
+                    require('./pass').hash(password, salt, function (err, hash, tag) { if (err) { reject(err); } else { resolve(hash); } }, 0);
+                }),
+                getUser: (userid) => Promise.resolve(obj.users[userid] || null)
+            });
+            const mcpHandler = obj.mcpHttp.createMcpHttpHandler({
+                authenticate: mcpAuthenticate,
+                createClient: (account) => {
+                    let address = '127.0.0.1';
+                    const bind = obj.args.portbind;
+                    if (typeof bind == 'string') { if ((bind != '') && (bind != '0.0.0.0') && (bind != '::')) { address = bind; } }
+                    else if (Array.isArray(bind) && (bind.length > 0) && (typeof bind[0] == 'string') && (bind[0] != '0.0.0.0') && (bind[0] != '::')) { address = bind[0]; }
+                    const url = ((obj.tlsServer != null) ? 'wss://' : 'ws://') + address + ':' + obj.args.port + '/control.ashx';
+                    return new obj.meshCentralClient.MeshCentralClient({ url: url, user: account.tokenUser, password: account.tokenPass });
+                },
+                idleTimeout: 10 * 60 * 1000
+            });
+            obj.app.post('/mcp', mcpHandler);
+            obj.app.get('/mcp', mcpHandler);
+            obj.app.delete('/mcp', mcpHandler);
+            obj.app.all('/mcp', function (req, res) { res.sendStatus(405); });
+
             for (var i in parent.config.domains) {
                 if ((parent.config.domains[i].dns != null) || (parent.config.domains[i].share != null)) { continue; } // This is a subdomain with a DNS name, no added HTTP bindings needed.
                 var domain = parent.config.domains[i];
