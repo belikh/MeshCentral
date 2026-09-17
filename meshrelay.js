@@ -13,6 +13,8 @@
 /*jshint esversion: 6 */
 "use strict";
 
+const terminalContextMenu = require('./terminal-context-menu.js');
+
 // Mesh Rights
 const MESHRIGHT_EDITMESH            = 0x00000001; // 1
 const MESHRIGHT_MANAGEUSERS         = 0x00000002; // 2
@@ -189,10 +191,6 @@ function CreateMeshRelayEx(parent, ws, req, domain, user, cookie) {
     // If there is no authentication, drop this connection
     if ((obj.id != null) && (obj.id.startsWith('meshmessenger/') == false) && (obj.user == null) && (obj.ruserid == null) && (obj.nouser !== true) && (obj.rnouser !== true)) { try { ws.close(); parent.parent.debug('relay', 'Relay: Connection with no authentication (' + obj.req.clientIp + ')'); } catch (e) { console.log(e); } return; }
 
-    // Relay session count (we may remove this in the future)
-    obj.relaySessionCounted = true;
-    parent.relaySessionCount++;
-
     // Setup slow relay is requested. This will show down sending any data to this peer.
     if ((req.query.slowrelay != null)) {
         var sr = null;
@@ -205,6 +203,18 @@ function CreateMeshRelayEx(parent, ws, req, domain, user, cookie) {
 
     // Patch Messenger protocol to 200
     if ((obj.id != null) && (obj.id.startsWith('meshmessenger/') == true)) { obj.req.query.p = 200; }
+
+    // Enforce the domain's terminal shell restrictions on the requested protocol
+    var requestedProtocol = parseInt(obj.req.query.p);
+    if ((Number.isNaN(requestedProtocol) == false) && (terminalContextMenu.isTerminalProtocolAllowed(domain, requestedProtocol) == false)) {
+        parent.parent.debug('relay', 'Relay: Terminal protocol ' + requestedProtocol + ' denied by domain terminal.contextMenu (' + obj.req.clientIp + ')');
+        try { ws.close(); } catch (e) { }
+        return;
+    }
+
+    // Relay session count (we may remove this in the future)
+    obj.relaySessionCounted = true;
+    parent.relaySessionCount++;
 
     // Mesh Rights
     const MESHRIGHT_EDITMESH = 1;

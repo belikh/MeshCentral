@@ -47,6 +47,7 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
     obj.express = require('express');
     obj.meshAgentHandler = require('./meshagent.js');
     obj.meshRelayHandler = require('./meshrelay.js');
+    obj.terminalContextMenu = require('./terminal-context-menu.js');
     obj.meshDeviceFileHandler = require('./meshdevicefile.js');
     obj.meshDesktopMultiplexHandler = require('./meshdesktopmultiplex.js');
     obj.meshIderHandler = require('./amt/amt-ider.js');
@@ -10277,6 +10278,10 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
         }
         xargs.customCSSTags += generateThemePackCSSTags(domain, page);
         xargs.customJSTags += generateThemePackJSTags(domain, page);
+
+        // Terminal context menu options
+        xargs.termMenu = obj.terminalContextMenu.getTerminalMenuMask(domain);
+
         return xargs;
     }
 

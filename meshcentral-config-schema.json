@@ -2531,6 +2531,22 @@
                 "default": "any",
                 "description": "Indicates the default linux terminal thats used when the user clicks the terminal connect button and disables the right mouse button on the terminal connect button when this is set."
               },
+              "contextMenu": {
+                "type": "array",
+                "default": [
+                  "all"
+                ],
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "all",
+                    "admin",
+                    "user",
+                    "ask"
+                  ]
+                },
+                "description": "Defines which terminal shell types can be launched from the terminal connection menu: 'all', 'admin', 'user' or 'ask'. An empty or unrecognised value disables all terminal shells. Requests for a disabled shell are refused by the server."
+              },
               "launchCommand": {
                 "type": "object",
                 "description": "Indicate what string the agent must write to the shell after starting a terminal session",
