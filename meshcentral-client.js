@@ -19,6 +19,9 @@
 
 const crypto = require('crypto');
 const EventEmitter = require('events');
+const fs = require('fs');
+const https = require('https');
+const path = require('path');
 const WebSocket = require('ws');
 
 const DEFAULT_URL = 'wss://localhost/control.ashx';
@@ -114,6 +117,18 @@ function desktopRelayUrl(controlUrl, params) {
     url.searchParams.set('id', '' + params.id);
     if (params.cookie != null) { url.searchParams.set('auth', '' + params.cookie); }
     return url.toString();
+}
+
+// Build the agent installer download url from the sanitised control url,
+// mirroring meshctrl: the websocket scheme swapped for https, control.ashx for
+// meshagents, and the agent type, device group and optional installer flags.
+function agentDownloadUrl(controlUrl, params) {
+    params = params || {};
+    let url = String(controlUrl).replace('wss://', 'https://').replace('/control.ashx', '/meshagents');
+    url += (url.indexOf('?') > 0) ? '&' : '?';
+    url += 'id=' + params.type + '&meshid=' + params.meshid;
+    if (params.installflags != null) { url += '&installflags=' + params.installflags; }
+    return url;
 }
 
 // Encode an object as a cookie using a key using AES-GCM. (key must be 32 bytes or more)
@@ -311,12 +326,27 @@ class MeshCentralClient extends EventEmitter {
                 let data = null;
                 try { data = JSON.parse(raw.toString()); } catch (ex) { }
                 if (data != null) {
+                    let correlated = false;
                     if (data.responseid != null) {
                         const pending = this._pending.get(data.responseid);
                         if (pending != null) {
                             this._pending.delete(data.responseid);
                             if (pending.timer != null) { clearTimeout(pending.timer); }
                             pending.resolve(data);
+                            correlated = true;
+                        }
+                    }
+                    if (!correlated && (data.action != null)) {
+                        // Some server replies omit the responseid entirely (the
+                        // deviceShares listing); those requests ask to match on
+                        // the action instead.
+                        for (const [responseid, pending] of this._pending) {
+                            if (pending.matchAction === data.action) {
+                                this._pending.delete(responseid);
+                                if (pending.timer != null) { clearTimeout(pending.timer); }
+                                pending.resolve(data);
+                                break;
+                            }
                         }
                     }
                     if ((data.action === 'serverinfo') && (data.serverinfo != null)) {
@@ -397,8 +427,9 @@ class MeshCentralClient extends EventEmitter {
     /**
     * Send one command and resolve when the response carrying its own
     * responseid arrives. Options: responseid (override the generated id),
-    * timeout (ms, 0 disables). Rejects with TimeoutError, ConnectionError or
-    * AuthError.
+    * matchAction (also resolve on a message whose action matches, for server
+    * replies that omit the responseid), timeout (ms, 0 disables). Rejects with
+    * TimeoutError, ConnectionError or AuthError.
     */
     request(action, params, options) {
         params = params || {};
@@ -409,7 +440,7 @@ class MeshCentralClient extends EventEmitter {
         const responseid = (options.responseid != null) ? options.responseid : this.newResponseId();
         const timeout = (options.timeout != null) ? options.timeout : this.commandTimeout;
         return new Promise((resolve, reject) => {
-            const entry = { resolve: resolve, reject: reject, action: action, timer: null };
+            const entry = { resolve: resolve, reject: reject, action: action, timer: null, matchAction: (options.matchAction === true) ? action : null };
             if (timeout > 0) {
                 entry.timer = setTimeout(() => {
                     if (this._pending.get(responseid) === entry) {
@@ -440,6 +471,79 @@ class MeshCentralClient extends EventEmitter {
     /** Generate a response id unique to this client and call. */
     newResponseId() {
         return 'mc-' + process.pid.toString(36) + '-' + (this._nextResponseId++).toString(36) + '-' + crypto.randomBytes(4).toString('hex');
+    }
+
+    /**
+    * Download an agent installer for a device group from the server's
+    * meshagents endpoint and save it next to the bridge, mirroring meshctrl:
+    * the same url (https, /meshagents, id, meshid, optional installflags), the
+    * server supplied filename and a refusal to overwrite an existing file.
+    *
+    * Options:
+    *   type         Agent architecture number (required).
+    *   meshid       Device group id (required).
+    *   installflags Optional installer flags.
+    *   directory    Directory to save into (default: the process working directory).
+    *   timeout      Download timeout in ms (default: commandTimeout, 0 disables).
+    *   request      Optional https.request-compatible function, for tests.
+    *
+    * Resolves with { filename, path, size }. Rejects with TimeoutError, or a
+    * MeshCentralError carrying the server status or the existing-file message.
+    */
+    downloadAgent(options) {
+        options = options || {};
+        const url = agentDownloadUrl(this.controlUrl, options);
+        const directory = (options.directory != null) ? options.directory : process.cwd();
+        const timeout = (options.timeout != null) ? options.timeout : this.commandTimeout;
+        const requestFn = (typeof options.request === 'function') ? options.request : https.request;
+        return new Promise((resolve, reject) => {
+            let finished = false;
+            const fail = (error) => {
+                if (finished) { return; }
+                finished = true;
+                reject(error);
+            };
+            const req = requestFn(url, { rejectUnauthorized: false, checkServerIdentity: onVerifyServer }, (res) => {
+                if (res.statusCode !== 200) {
+                    fail(new MeshCentralError('Download error, statusCode: ' + res.statusCode, 'EDOWNLOAD'));
+                    try { if (typeof res.resume === 'function') { res.resume(); } } catch (ex) { }
+                    return;
+                }
+                let filename = 'meshagent';
+                const disposition = (res.headers != null) ? res.headers['content-disposition'] : null;
+                if (typeof disposition === 'string') {
+                    const i = disposition.indexOf('filename="');
+                    if (i >= 0) {
+                        filename = disposition.substring(i + 10);
+                        const j = filename.indexOf('"');
+                        if (j >= 0) { filename = filename.substring(0, j); }
+                    }
+                }
+                filename = path.basename(filename);
+                const chunks = [];
+                res.on('data', (chunk) => { chunks.push(chunk); });
+                res.on('error', fail);
+                res.on('end', () => {
+                    if (finished) { return; }
+                    const data = Buffer.concat(chunks);
+                    const filePath = path.join(directory, filename);
+                    try {
+                        if (fs.existsSync(filePath)) { throw new MeshCentralError('File "' + filename + '" already exists.', 'EEXISTS'); }
+                        fs.writeFileSync(filePath, data);
+                    } catch (ex) { fail(ex); return; }
+                    finished = true;
+                    resolve({ filename: filename, path: filePath, size: data.length });
+                });
+            });
+            req.on('error', fail);
+            if ((timeout > 0) && (typeof req.setTimeout === 'function')) {
+                req.setTimeout(timeout, () => {
+                    fail(new TimeoutError('Command "agentdownload" timed out after ' + timeout + 'ms.', 'ETIMEDOUT', 'agentdownload', timeout));
+                    try { req.destroy(); } catch (ex) { }
+                });
+            }
+            req.end();
+        });
     }
 
     /**
@@ -641,5 +745,6 @@ module.exports = {
     AuthError: AuthError,
     TimeoutError: TimeoutError,
     RelayError: RelayError,
-    desktopRelayUrl: desktopRelayUrl
+    desktopRelayUrl: desktopRelayUrl,
+    agentDownloadUrl: agentDownloadUrl
 };
