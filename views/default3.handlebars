@@ -17213,7 +17213,8 @@
                     var ltoken = loginTokens[i];
                     var trash = '<a href=# onclick=\'return p2removeLoginToken(event,"' + encodeURIComponentEx(ltoken.tokenUser) + '")\' title="' + "Remove login token" + '" role=button><i class="fa-solid fa-trash text-danger fa-xs"></i></a>';
                     var details = '';
-                    if (ltoken.expire != 0) { details = EscapeHtml(format("Expires {0}", printDateTime(new Date(ltoken.expire)))) + ' '; }
+                    if (ltoken.created != null) { details += EscapeHtml(format("Created {0}", printDateTime(new Date(ltoken.created)))) + ' '; }
+                    if (ltoken.expire != 0) { details += EscapeHtml(format("Expires {0}", printDateTime(new Date(ltoken.expire)))) + ' '; }
                     x += '<tr ' + (((++count % 2) == 0) ? 'style=background-color:#DDD' : '') + '><td style=width:30%><i class="fa-fw fa-solid fa-user"></i>&nbsp;' + EscapeHtml(ltoken.name) + '<div></div></div></td><td style=width:70%><div style=float:right>' + details + trash + '</div><div>' + EscapeHtml(ltoken.tokenUser) + '</div></td></tr>';
                 }
                 x += '</tbody></table></div>';
