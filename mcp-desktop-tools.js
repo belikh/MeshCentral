@@ -63,7 +63,7 @@ function registerDesktopTools(registry, options) {
     const acquireCapture = (typeof options.acquireCapture === 'function') ? options.acquireCapture : null;
 
     registerSnapshotTool(registry, { client: options.client, createCapture: createCapture, defaults: defaults });
-    registerFramesTool(registry, { cache: cache, defaults: defaults });
+    registerFramesTool(registry, { cache: cache, defaults: defaults, now: options.now, sleep: options.sleep });
     registerInputTool(registry, {
         client: options.client,
         createCapture: createCapture,

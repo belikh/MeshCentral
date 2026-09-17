@@ -39,20 +39,22 @@ function delay(milliseconds) {
  * not one frame arrived.
  */
 async function captureSequence(capture, options) {
-    const deadline = Date.now() + options.timeout;
+    const now = (typeof options.now === 'function') ? options.now : Date.now;
+    const sleep = (typeof options.sleep === 'function') ? options.sleep : delay;
+    const deadline = now() + options.timeout;
     const frames = [];
     let lastCaptured = 0;
     for (let index = 0; index < options.count; index++) {
         if (index > 0) {
-            const budget = deadline - Date.now();
+            const budget = deadline - now();
             if (budget <= 0) { break; }
-            const pause = Math.min(options.interval - (Date.now() - lastCaptured), budget);
-            if (pause > 0) { await delay(pause); }
+            const pause = Math.min(options.interval - (now() - lastCaptured), budget);
+            if (pause > 0) { await sleep(pause); }
         }
-        const budget = deadline - Date.now();
+        const budget = deadline - now();
         if (budget <= 0) { break; }
         frames.push(await capture.waitForFrame({ latest: true, timeout: budget }));
-        lastCaptured = Date.now();
+        lastCaptured = now();
     }
     if (frames.length === 0) {
         throw new DesktopCaptureError('Timed out waiting for a desktop frame', 'E_TIMEOUT');
@@ -83,7 +85,7 @@ function framesResult(frames) {
  * so repeated polls and look-act-look loops reuse one relay negotiation. Any
  * failure releases the cached session so the next call renegotiates.
  */
-async function desktopFrames(cache, args, defaults) {
+async function desktopFrames(cache, args, defaults, seams) {
     let entry = null;
     try {
         entry = await cache.acquire(args.deviceid, sessionOptionsFrom(args, defaults));
@@ -98,11 +100,11 @@ async function desktopFrames(cache, args, defaults) {
             });
             return imageResult(frame.data, frame.mimeType, formatFrameMetadata(frame));
         }
-        const frames = await captureSequence(entry.capture, {
+        const frames = await captureSequence(entry.capture, Object.assign({
             count: (args.count != null) ? args.count : DEFAULT_FRAME_COUNT,
             interval: (args.interval != null) ? args.interval : DEFAULT_FRAME_INTERVAL,
             timeout: (args.timeout != null) ? args.timeout : DEFAULT_FRAMES_TIMEOUT
-        });
+        }, seams || {}));
         return framesResult(frames);
     } catch (error) {
         try { await cache.release(args.deviceid, entry); } catch (ex) { }
@@ -117,6 +119,8 @@ async function desktopFrames(cache, args, defaults) {
  *
  * options.cache     The DesktopSessionCache shared with the input tool.
  * options.defaults  Configured image defaults for sessionOptionsFrom.
+ * options.now       Clock used by the sequence budget; Date.now by default.
+ * options.sleep     Sleep used between sequence frames; a timer by default.
  */
 function registerFramesTool(registry, options) {
     registry.register({
@@ -133,7 +137,7 @@ function registerFramesTool(registry, options) {
             scale: z.number().int().min(1).max(65535).optional().describe('Maximum frame width in pixels for a newly opened session; the capture module default is 1024.')
         },
         target: (args) => args.deviceid,
-        handler: (args) => desktopFrames(options.cache, args, options.defaults)
+        handler: (args) => desktopFrames(options.cache, args, options.defaults, { now: options.now, sleep: options.sleep })
     });
 }
 

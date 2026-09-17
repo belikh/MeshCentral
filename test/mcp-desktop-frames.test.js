@@ -153,7 +153,13 @@ function createHarness(state) {
         now: (state != null) ? state.now : undefined
     });
     const registry = createToolRegistry({ onInvocation: (record) => records.push(record) });
-    registerDesktopTools(registry, { client: fakes.client, createCapture: fakes.factory, cache: cache });
+    registerDesktopTools(registry, {
+        client: fakes.client,
+        createCapture: fakes.factory,
+        cache: cache,
+        now: (state != null) ? state.now : undefined,
+        sleep: (state != null) ? state.sleep : undefined
+    });
     return Object.assign(fakes, { registry, records, cache, lifecycle });
 }
 
@@ -215,7 +221,13 @@ test('mesh_desktop_frames leaves the session cached for a later poll', async () 
 });
 
 test('mesh_desktop_frames stops at the total timeout and returns the frames captured so far', async () => {
-    const { registry, captures, cache } = createHarness({ freshFrames: true });
+    let clock = 1000;
+    const sleeps = [];
+    const { registry, captures, cache } = createHarness({
+        freshFrames: true,
+        now: () => clock,
+        sleep: (milliseconds) => { sleeps.push(milliseconds); clock += milliseconds; return Promise.resolve(); }
+    });
 
     const result = await registry.call('mesh_desktop_frames', {
         deviceid: NODE_ID,
@@ -227,6 +239,7 @@ test('mesh_desktop_frames stops at the total timeout and returns the frames capt
     assert.equal(result.isError, undefined);
     assert.equal(result.content.length, 4);
     assert.equal(captures[0].waits.length, 2);
+    assert.deepEqual(sleeps, [100, 20]);
     assert.equal(cache.size, 1);
 });
 
