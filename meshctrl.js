@@ -14,7 +14,6 @@ try { require('ws'); } catch (ex) { console.log('Missing module "ws", type "npm 
 
 var settings = {};
 const crypto = require('crypto');
-const RUNCOMMAND_RESPONSE_ID = crypto.randomUUID(); // unique per process, see PR description: avoids concurrent 'runcommand' invocations under the same login cross-talking on each other's --reply output
 const args = require('minimist')(process.argv.slice(2));
 const path = require('path');
 const possibleCommands = ['edituser', 'listusers', 'listusersessions', 'listdevicegroups', 'listdevices', 'listusersofdevicegroup', 'listevents', 'logintokens', 'serverinfo', 'serverversion', 'userinfo', 'adduser', 'removeuser', 'adddevicegroup', 'removedevicegroup', 'editdevicegroup', 'broadcast', 'showevents', 'addusertodevicegroup', 'removeuserfromdevicegroup', 'addusertodevice', 'removeuserfromdevice', 'sendinviteemail', 'generateinvitelink', 'config', 'movetodevicegroup', 'deviceinfo', 'removedevice', 'editdevice', 'addlocaldevice', 'addamtdevice', 'addusergroup', 'listusergroups', 'removeusergroup', 'runcommand', 'shell', 'upload', 'download', 'deviceopenurl', 'devicemessage', 'devicetoast', 'addtousergroup', 'removefromusergroup', 'removeallusersfromusergroup', 'devicesharing', 'devicepower', 'indexagenterrorlog', 'agentdownload', 'report', 'grouptoast', 'groupmessage', 'webrelay'];
@@ -1328,92 +1327,50 @@ function performConfigOperations(args) {
 function onVerifyServer(clientName, certs) { return null; }
 
 function serverConnect() {
-    const WebSocket = require('ws');
+    const { MeshCentralClient } = require('./meshcentral-client');
 
-    var url = 'wss://localhost/control.ashx';
-    if (args.url) {
-        url = args.url;
-        if (url.length < 5) { console.log("Invalid url."); process.exit(); return; }
-        if ((url.startsWith('wss://') == false) && (url.startsWith('ws://') == false)) { console.log("Invalid url."); process.exit(); return; }
-        var i = url.indexOf('?key='), loginKey = null;
-        if (i >= 0) { loginKey = url.substring(i + 5); url = url.substring(0, i); }
-        if (url.endsWith('/') == false) { url += '/'; }
-        url += 'control.ashx';
-        if (loginKey != null) { url += '?key=' + loginKey; }
-    }
+    // The client owns the connection, authentication in all its modes, the
+    // handshake and the startup discovery of server info, rights and version.
+    var client = null;
+    try {
+        client = new MeshCentralClient({
+            url: args.url,
+            user: args.loginuser,
+            password: args.loginpass,
+            token: args.token,
+            loginKey: args.loginkey,
+            loginKeyFile: args.loginkeyfile,
+            domain: args.logindomain,
+            proxy: args.proxy,
+            checkServerIdentity: onVerifyServer
+        });
+    } catch (ex) { console.log(ex.message); process.exit(); return; }
+    settings.xxurl = client.controlUrl;
+    const RUNCOMMAND_RESPONSE_ID = client.newResponseId();
 
-    // TODO: checkServerIdentity does not work???
-    var options = { rejectUnauthorized: false, checkServerIdentity: onVerifyServer }
-
-    // Setup the HTTP proxy if needed
-    if (args.proxy != null) {
-        const HttpsProxyAgent = require('https-proxy-agent');
-        options.agent = new HttpsProxyAgent(new URL(args.proxy));
-    }
-
-    // Password authentication
-    if (args.loginpass != null) {
-        var username = 'admin';
-        if (args.loginuser != null) { username = args.loginuser; }
-        var token = '';
-        if (args.token != null) { token = ',' + Buffer.from('' + args.token).toString('base64'); }
-        options.headers = { 'x-meshauth': Buffer.from('' + username).toString('base64') + ',' + Buffer.from('' + args.loginpass).toString('base64') + token }
-    }
-
-    // Cookie authentication
-    var ckey = null, loginCookie = null;
-    if (args.loginkey != null) {
-        // User key passed in as argument hex
-        if (args.loginkey.length != 160) { loginCookie = args.loginkey; }
-        ckey = Buffer.from(args.loginkey, 'hex');
-        if (ckey.length != 80) { ckey = null; loginCookie = args.loginkey; }
-    } else if (args.loginkeyfile != null) {
-        // Load key from hex file
-        var fs = require('fs');
-        try {
-            var keydata = fs.readFileSync(args.loginkeyfile, 'utf8').split(' ').join('').split('\r').join('').split('\n').join('');
-            ckey = Buffer.from(keydata, 'hex');
-            if (ckey.length != 80) { ckey = null; loginCookie = args.loginkey; }
-        } catch (ex) { console.log(ex.message); process.exit(); return; }
-    }
-
-    settings.xxurl = url;
-    if (ckey != null) {
-        var domainid = '', username = 'admin';
-        if (args.logindomain != null) { domainid = args.logindomain; }
-        if (args.loginuser != null) { username = args.loginuser; }
-        url += (url.indexOf('?key=') >= 0 ? '&auth=' : '?auth=') + encodeCookie({ userid: 'user/' + domainid + '/' + username, domainid: domainid }, ckey);
-    } else {
-        if (args.logindomain != null) { console.log("--logindomain can only be used along with --loginkey."); process.exit(); return; }
-        if (loginCookie != null) { url += (url.indexOf('?key=') >= 0 ? '&auth=' : '?auth=') + loginCookie; }
-    }
-
-    const ws = new WebSocket(url, options);
-    //console.log('Connecting to ' + url);
-
-    ws.on('open', function open() {
+    client.connect().then(function open() {
         //console.log('Connected.');
         switch (settings.cmd) {
             case 'serverinfo': { break; }
-            case 'serverversion': { ws.send(JSON.stringify({ action: 'serverversion', responseid: 'meshctrl' })); break; }
+            case 'serverversion': { client.send(JSON.stringify({ action: 'serverversion', responseid: 'meshctrl' })); break; }
             case 'userinfo': { break; }
-            case 'listusers': { ws.send(JSON.stringify({ action: 'users', responseid: 'meshctrl' })); break; }
-            case 'listusersessions': { ws.send(JSON.stringify({ action: 'wssessioncount', responseid: 'meshctrl' })); break; }
+            case 'listusers': { client.send(JSON.stringify({ action: 'users', responseid: 'meshctrl' })); break; }
+            case 'listusersessions': { client.send(JSON.stringify({ action: 'wssessioncount', responseid: 'meshctrl' })); break; }
             case 'removeallusersfromusergroup':
-            case 'listusergroups': { ws.send(JSON.stringify({ action: 'usergroups', responseid: 'meshctrl' })); break; }
-            case 'listdevicegroups': { ws.send(JSON.stringify({ action: 'meshes', responseid: 'meshctrl' })); break; }
-            case 'listusersofdevicegroup': { ws.send(JSON.stringify({ action: 'meshes', responseid: 'meshctrl' })); break; }
+            case 'listusergroups': { client.send(JSON.stringify({ action: 'usergroups', responseid: 'meshctrl' })); break; }
+            case 'listdevicegroups': { client.send(JSON.stringify({ action: 'meshes', responseid: 'meshctrl' })); break; }
+            case 'listusersofdevicegroup': { client.send(JSON.stringify({ action: 'meshes', responseid: 'meshctrl' })); break; }
             case 'listdevices': {
                 if (args.details) {
                     // Get list of devices with lots of details
-                    ws.send(JSON.stringify({ action: 'getDeviceDetails', type: (args.csv) ? 'csv' : 'json' }));
+                    client.send(JSON.stringify({ action: 'getDeviceDetails', type: (args.csv) ? 'csv' : 'json' }));
                 } else if (args.group) {
-                    ws.send(JSON.stringify({ action: 'nodes', meshname: args.group, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'nodes', meshname: args.group, responseid: 'meshctrl' }));
                 } else if (args.id) {
-                    ws.send(JSON.stringify({ action: 'nodes', meshid: args.id, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'nodes', meshid: args.id, responseid: 'meshctrl' }));
                 } else {
-                    ws.send(JSON.stringify({ action: 'meshes' }));
-                    ws.send(JSON.stringify({ action: 'nodes', responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'meshes' }));
+                    client.send(JSON.stringify({ action: 'nodes', responseid: 'meshctrl' }));
                 }
                 break;
             }
@@ -1431,18 +1388,18 @@ function serverConnect() {
                     cmd = { action: 'events', responseid: 'meshctrl' };
                 }
                 if (typeof limit == 'number') { cmd.limit = limit; }
-                ws.send(JSON.stringify(cmd));
+                client.send(JSON.stringify(cmd));
                 break;
             }
             case 'logintokens': {
                 if (args.add) {
                     var cmd = { action: 'createLoginToken', name: args.add, expire: 0, responseid: 'meshctrl' };
                     if (args.expire) { cmd.expire = parseInt(args.expire); }
-                    ws.send(JSON.stringify(cmd));
+                    client.send(JSON.stringify(cmd));
                 } else {
                     var cmd = { action: 'loginTokens', responseid: 'meshctrl' };
                     if (args.remove) { cmd.remove = [args.remove]; }
-                    ws.send(JSON.stringify(cmd));
+                    client.send(JSON.stringify(cmd));
                 }
                 break;
             }
@@ -1457,7 +1414,7 @@ function serverConnect() {
                 if (args.phone === true) { op.phone = ''; }
                 if (typeof args.phone == 'string') { op.phone = args.phone; }
                 if (typeof args.realname == 'string') { op.realname = args.realname; }
-                ws.send(JSON.stringify(op));
+                client.send(JSON.stringify(op));
                 break;
             }
             case 'edituser': {
@@ -1473,25 +1430,25 @@ function serverConnect() {
                 if (typeof args.phone == 'string') { op.phone = args.phone; }
                 if (typeof args.realname == 'string') { op.realname = args.realname; }
                 if (args.realname === true) { op.realname = ''; }
-                ws.send(JSON.stringify(op));
+                client.send(JSON.stringify(op));
                 break;
             }
             case 'removeuser': {
                 var userid = args.userid;
                 if ((args.domain != null) && (userid.indexOf('/') < 0)) { userid = 'user/' + args.domain + '/' + userid; }
-                ws.send(JSON.stringify({ action: 'deleteuser', userid: userid, responseid: 'meshctrl' }));
+                client.send(JSON.stringify({ action: 'deleteuser', userid: userid, responseid: 'meshctrl' }));
                 break;
             }
             case 'addusergroup': {
                 var op = { action: 'createusergroup', name: args.name, desc: args.desc, responseid: 'meshctrl' };
                 if (args.domain) { op.domain = args.domain; }
-                ws.send(JSON.stringify(op));
+                client.send(JSON.stringify(op));
                 break;
             }
             case 'removeusergroup': {
                 var ugrpid = args.groupid;
                 if ((args.domain != null) && (userid.indexOf('/') < 0)) { ugrpid = 'ugrp/' + args.domain + '/' + ugrpid; }
-                ws.send(JSON.stringify({ action: 'deleteusergroup', ugrpid: ugrpid, responseid: 'meshctrl' }));
+                client.send(JSON.stringify({ action: 'deleteusergroup', ugrpid: ugrpid, responseid: 'meshctrl' }));
                 break;
             }
             case 'addtousergroup': {
@@ -1502,12 +1459,12 @@ function serverConnect() {
                 if (args.userid != null) {
                     var userid = args.userid;
                     if ((args.domain != null) && (userid.indexOf('/') < 0)) { userid = 'user/' + args.domain + '/' + userid; }
-                    ws.send(JSON.stringify({ action: 'addusertousergroup', ugrpid: ugrpid, usernames: [userid.split('/')[2]], responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'addusertousergroup', ugrpid: ugrpid, usernames: [userid.split('/')[2]], responseid: 'meshctrl' }));
                     break;
                 }
 
                 if ((args.id != null) && (args.id.startsWith('user/'))) {
-                    ws.send(JSON.stringify({ action: 'addusertousergroup', ugrpid: ugrpid, usernames: [args.id.split('/')[2]], responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'addusertousergroup', ugrpid: ugrpid, usernames: [args.id.split('/')[2]], responseid: 'meshctrl' }));
                     break;
                 }
 
@@ -1518,12 +1475,12 @@ function serverConnect() {
                 if (args.meshid != null) {
                     var meshid = args.meshid;
                     if ((args.domain != null) && (userid.indexOf('/') < 0)) { meshid = 'mesh/' + args.domain + '/' + meshid; }
-                    ws.send(JSON.stringify({ action: 'addmeshuser', meshid: meshid, userid: ugrpid, meshadmin: rights, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'addmeshuser', meshid: meshid, userid: ugrpid, meshadmin: rights, responseid: 'meshctrl' }));
                     break;
                 }
 
                 if ((args.id != null) && (args.id.startsWith('mesh/'))) {
-                    ws.send(JSON.stringify({ action: 'addmeshuser', meshid: args.id, userid: ugrpid, meshadmin: rights, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'addmeshuser', meshid: args.id, userid: ugrpid, meshadmin: rights, responseid: 'meshctrl' }));
                     break;
                 }
 
@@ -1531,12 +1488,12 @@ function serverConnect() {
                 if (args.nodeid != null) {
                     var nodeid = args.nodeid;
                     if ((args.domain != null) && (userid.indexOf('/') < 0)) { nodeid = 'node/' + args.domain + '/' + nodeid; }
-                    ws.send(JSON.stringify({ action: 'adddeviceuser', nodeid: nodeid, userids: [ugrpid], rights: rights, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'adddeviceuser', nodeid: nodeid, userids: [ugrpid], rights: rights, responseid: 'meshctrl' }));
                     break;
                 }
 
                 if ((args.id != null) && (args.id.startsWith('node/'))) {
-                    ws.send(JSON.stringify({ action: 'adddeviceuser', nodeid: args.id, userids: [ugrpid], rights: rights, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'adddeviceuser', nodeid: args.id, userids: [ugrpid], rights: rights, responseid: 'meshctrl' }));
                     break;
                 }
 
@@ -1550,12 +1507,12 @@ function serverConnect() {
                 if (args.userid != null) {
                     var userid = args.userid;
                     if ((args.domain != null) && (userid.indexOf('/') < 0)) { userid = 'user/' + args.domain + '/' + userid; }
-                    ws.send(JSON.stringify({ action: 'removeuserfromusergroup', ugrpid: ugrpid, userid: userid, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'removeuserfromusergroup', ugrpid: ugrpid, userid: userid, responseid: 'meshctrl' }));
                     break;
                 }
 
                 if ((args.id != null) && (args.id.startsWith('user/'))) {
-                    ws.send(JSON.stringify({ action: 'removeuserfromusergroup', ugrpid: ugrpid, userid: args.id, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'removeuserfromusergroup', ugrpid: ugrpid, userid: args.id, responseid: 'meshctrl' }));
                     break;
                 }
 
@@ -1563,12 +1520,12 @@ function serverConnect() {
                 if (args.meshid != null) {
                     var meshid = args.meshid;
                     if ((args.domain != null) && (userid.indexOf('/') < 0)) { meshid = 'mesh/' + args.domain + '/' + meshid; }
-                    ws.send(JSON.stringify({ action: 'removemeshuser', meshid: meshid, userid: ugrpid, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'removemeshuser', meshid: meshid, userid: ugrpid, responseid: 'meshctrl' }));
                     break;
                 }
 
                 if ((args.id != null) && (args.id.startsWith('mesh/'))) {
-                    ws.send(JSON.stringify({ action: 'removemeshuser', meshid: args.id, userid: ugrpid, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'removemeshuser', meshid: args.id, userid: ugrpid, responseid: 'meshctrl' }));
                     break;
                 }
 
@@ -1576,12 +1533,12 @@ function serverConnect() {
                 if (args.nodeid != null) {
                     var nodeid = args.nodeid;
                     if ((args.domain != null) && (userid.indexOf('/') < 0)) { nodeid = 'node/' + args.domain + '/' + nodeid; }
-                    ws.send(JSON.stringify({ action: 'adddeviceuser', nodeid: nodeid, userids: [ugrpid], rights: 0, responseid: 'meshctrl', remove: true }));
+                    client.send(JSON.stringify({ action: 'adddeviceuser', nodeid: nodeid, userids: [ugrpid], rights: 0, responseid: 'meshctrl', remove: true }));
                     break;
                 }
 
                 if ((args.id != null) && (args.id.startsWith('node/'))) {
-                    ws.send(JSON.stringify({ action: 'adddeviceuser', nodeid: args.id, userids: [ugrpid], rights: 0, responseid: 'meshctrl', remove: true }));
+                    client.send(JSON.stringify({ action: 'adddeviceuser', nodeid: args.id, userids: [ugrpid], rights: 0, responseid: 'meshctrl', remove: true }));
                     break;
                 }
 
@@ -1594,13 +1551,13 @@ function serverConnect() {
                 if (args.agentless) { op.meshtype = 3; }
                 if (args.features) { op.flags = parseInt(args.features); }
                 if (args.consent) { op.consent = parseInt(args.consent); }
-                ws.send(JSON.stringify(op));
+                client.send(JSON.stringify(op));
                 break;
             }
             case 'removedevicegroup': {
                 var op = { action: 'deletemesh', responseid: 'meshctrl' };
                 if (args.id) { op.meshid = args.id; } else if (args.group) { op.meshname = args.group; }
-                ws.send(JSON.stringify(op));
+                client.send(JSON.stringify(op));
                 break;
             }
             case 'addamtdevice': {
@@ -1611,7 +1568,7 @@ function serverConnect() {
                 if ((typeof args.user == 'string') && (args.user != '')) { op.amtusername = args.user; }
                 if ((typeof args.pass == 'string') && (args.pass != '')) { op.amtpassword = args.pass; }
                 if (args.notls) { op.amttls = 0; }
-                ws.send(JSON.stringify(op));
+                client.send(JSON.stringify(op));
                 break;
             }
             case 'addlocaldevice': {
@@ -1623,7 +1580,7 @@ function serverConnect() {
                     if ((typeof parseInt(args.type) != 'number') || isNaN(parseInt(args.type))) { console.log("Invalid type."); process.exit(1); return; }
                     op.type = args.type;
                 }
-                ws.send(JSON.stringify(op));
+                client.send(JSON.stringify(op));
                 break;
             }
             case 'editdevicegroup': {
@@ -1648,13 +1605,13 @@ function serverConnect() {
                     var consent = parseInt(args.consent);
                     if (typeof consent == 'number') { op.consent = consent; }
                 }
-                ws.send(JSON.stringify(op));
+                client.send(JSON.stringify(op));
                 break;
             }
             case 'movetodevicegroup': {
                 var op = { action: 'changeDeviceMesh', responseid: 'meshctrl', nodeids: [args.devid] };
                 if (args.id) { op.meshid = args.id; } else if (args.group) { op.meshname = args.group; }
-                ws.send(JSON.stringify(op));
+                client.send(JSON.stringify(op));
                 break;
             }
             case 'addusertodevicegroup': {
@@ -1680,13 +1637,13 @@ function serverConnect() {
                 if (args.uninstall) { meshrights |= 32768; }
                 var op = { action: 'addmeshuser', userids: [args.userid], meshadmin: meshrights, responseid: 'meshctrl' };
                 if (args.id) { op.meshid = args.id; } else if (args.group) { op.meshname = args.group; }
-                ws.send(JSON.stringify(op));
+                client.send(JSON.stringify(op));
                 break;
             }
             case 'removeuserfromdevicegroup': {
                 var op = { action: 'removemeshuser', userid: args.userid, responseid: 'meshctrl' };
                 if (args.id) { op.meshid = args.id; } else if (args.group) { op.meshname = args.group; }
-                ws.send(JSON.stringify(op));
+                client.send(JSON.stringify(op));
                 break;
             }
             case 'addusertodevice': {
@@ -1708,12 +1665,12 @@ function serverConnect() {
                 if (args.chatnotify) { meshrights |= 16384; }
                 if (args.uninstall) { meshrights |= 32768; }
                 var op = { action: 'adddeviceuser', nodeid: args.id, usernames: [args.userid], rights: meshrights, responseid: 'meshctrl' };
-                ws.send(JSON.stringify(op));
+                client.send(JSON.stringify(op));
                 break;
             }
             case 'removeuserfromdevice': {
                 var op = { action: 'adddeviceuser', nodeid: args.id, usernames: [args.userid], rights: 0, remove: true, responseid: 'meshctrl' };
-                ws.send(JSON.stringify(op));
+                client.send(JSON.stringify(op));
                 break;
             }
             case 'sendinviteemail': {
@@ -1721,20 +1678,20 @@ function serverConnect() {
                 if (args.id) { op.meshid = args.id; } else if (args.group) { op.meshname = args.group; }
                 if (args.name) { op.name = args.name; }
                 if (args.message) { op.msg = args.message; }
-                ws.send(JSON.stringify(op));
+                client.send(JSON.stringify(op));
                 break;
             }
             case 'generateinvitelink': {
                 var op = { action: 'createInviteLink', expire: args.hours, flags: 0, responseid: 'meshctrl' }
                 if (args.id) { op.meshid = args.id; } else if (args.group) { op.meshname = args.group; }
                 if (args.flags) { op.flags = args.flags; }
-                ws.send(JSON.stringify(op));
+                client.send(JSON.stringify(op));
                 break;
             }
             case 'broadcast': {
                 var op = { action: 'userbroadcast', msg: args.msg, responseid: 'meshctrl' };
                 if (args.user) { op.userid = args.user; }
-                ws.send(JSON.stringify(op));
+                client.send(JSON.stringify(op));
                 break;
             }
             case 'showevents': {
@@ -1743,22 +1700,22 @@ function serverConnect() {
             }
             case 'deviceinfo': {
                 settings.deviceinfocount = 4;
-                ws.send(JSON.stringify({ action: 'nodes' }));
-                ws.send(JSON.stringify({ action: 'getnetworkinfo', nodeid: args.id, responseid: 'meshctrl' }));
-                ws.send(JSON.stringify({ action: 'lastconnect', nodeid: args.id, responseid: 'meshctrl' }));
-                ws.send(JSON.stringify({ action: 'getsysinfo', nodeid: args.id, nodeinfo: true, responseid: 'meshctrl' }));
+                client.send(JSON.stringify({ action: 'nodes' }));
+                client.send(JSON.stringify({ action: 'getnetworkinfo', nodeid: args.id, responseid: 'meshctrl' }));
+                client.send(JSON.stringify({ action: 'lastconnect', nodeid: args.id, responseid: 'meshctrl' }));
+                client.send(JSON.stringify({ action: 'getsysinfo', nodeid: args.id, nodeinfo: true, responseid: 'meshctrl' }));
                 break;
             }
             case 'removedevice': {
                 var op = { action: 'removedevices', nodeids: [ args.id ], responseid: 'meshctrl' };
-                ws.send(JSON.stringify(op));
+                client.send(JSON.stringify(op));
                 break;
             }
             case 'editdevice': {
                 if (args.addtag || args.removetag) {
                     // we need to fetch the node data first to then modify the tags
                     var nodeid = args.id;
-                    ws.send(JSON.stringify({ action: 'nodes', id: args.id, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'nodes', id: args.id, responseid: 'meshctrl' }));
                 } else {
                     var op = { action: 'changedevice', nodeid: args.id, responseid: 'meshctrl' };
                     if (typeof args.name == 'string') { op.name = args.name; }
@@ -1767,7 +1724,7 @@ function serverConnect() {
                     if (args.tags) { if (args.tags === true) { op.tags = ''; } else if (typeof args.tags == 'string') { op.tags = args.tags.split(','); } else if (typeof args.tags == 'number') { op.tags = '' + args.tags; } }
                     if (args.icon) { op.icon = parseInt(args.icon); if ((typeof op.icon != 'number') || isNaN(op.icon) || (op.icon < 1) || (op.icon > 8)) { console.log("Icon must be between 1 and 8."); process.exit(1); return; } }
                     if (args.consent) { op.consent = parseInt(args.consent); if ((typeof op.consent != 'number') || isNaN(op.consent) || (op.consent < 1)) { console.log("Invalid consent flags."); process.exit(1); return; } }
-                    ws.send(JSON.stringify(op));
+                    client.send(JSON.stringify(op));
                 }
                 break;
             }
@@ -1776,38 +1733,38 @@ function serverConnect() {
                 if (args.runasuser) { runAsUser = 1; } else if (args.runasuseronly) { runAsUser = 2; }
                 var reply = false;
                 if (args.reply) { reply = true; }
-                ws.send(JSON.stringify({ action: 'runcommands', nodeids: [args.id], type: ((args.powershell) ? 2 : 0), cmds: args.run, responseid: RUNCOMMAND_RESPONSE_ID, runAsUser: runAsUser, reply: reply }));
+                client.send(JSON.stringify({ action: 'runcommands', nodeids: [args.id], type: ((args.powershell) ? 2 : 0), cmds: args.run, responseid: RUNCOMMAND_RESPONSE_ID, runAsUser: runAsUser, reply: reply }));
                 break;
             }
             case 'shell':
             case 'upload':
             case 'download': {
-                ws.send("{\"action\":\"authcookie\"}");
+                client.send("{\"action\":\"authcookie\"}");
                 break;
             }
             case 'devicepower': {
                 var nodes = args.id.split(',');
                 if (args.wake) {
                     // Wake operation
-                    ws.send(JSON.stringify({ action: 'wakedevices', nodeids: nodes, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'wakedevices', nodeids: nodes, responseid: 'meshctrl' }));
                 } else if (args.off) {
                     // Power off operation
-                    ws.send(JSON.stringify({ action: 'poweraction', nodeids: nodes, actiontype: 2, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'poweraction', nodeids: nodes, actiontype: 2, responseid: 'meshctrl' }));
                 } else if (args.reset) {
                     // Reset operation
-                    ws.send(JSON.stringify({ action: 'poweraction', nodeids: nodes, actiontype: 3, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'poweraction', nodeids: nodes, actiontype: 3, responseid: 'meshctrl' }));
                 } else if (args.sleep) {
                     // Sleep operation
-                    ws.send(JSON.stringify({ action: 'poweraction', nodeids: nodes, actiontype: 4, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'poweraction', nodeids: nodes, actiontype: 4, responseid: 'meshctrl' }));
                 } else if (args.amton) {
                     // Intel AMT Power on operation
-                    ws.send(JSON.stringify({ action: 'poweraction', nodeids: nodes, actiontype: 302, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'poweraction', nodeids: nodes, actiontype: 302, responseid: 'meshctrl' }));
                 } else if (args.amtoff) {
                     // Intel AMT Power off operation
-                    ws.send(JSON.stringify({ action: 'poweraction', nodeids: nodes, actiontype: 308, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'poweraction', nodeids: nodes, actiontype: 308, responseid: 'meshctrl' }));
                 } else if (args.amtreset) {
                     // Intel AMT Power reset operation
-                    ws.send(JSON.stringify({ action: 'poweraction', nodeids: nodes, actiontype: 310, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'poweraction', nodeids: nodes, actiontype: 310, responseid: 'meshctrl' }));
                 } else {
                     console.log('No power operation specified.');
                     process.exit(1);
@@ -1880,7 +1837,7 @@ function serverConnect() {
                 } else if (protocol == 2) {
                     port = 443;
                 }
-                ws.send(JSON.stringify({ action: 'webrelay', nodeid: args.id, port: port, appid: protocol, responseid: 'meshctrl' }));
+                client.send(JSON.stringify({ action: 'webrelay', nodeid: args.id, port: port, appid: protocol, responseid: 'meshctrl' }));
                 break;
             }
             case 'devicesharing': {
@@ -1960,41 +1917,41 @@ function serverConnect() {
                         if ((typeof args.duration != 'number') || (args.duration < 1)) { console.log("Invalid duration value."); process.exit(1); return; }
 
                         // Recurring sharing
-                        ws.send(JSON.stringify({ action: 'createDeviceShareLink', nodeid: args.id, guestname: args.add, p: p, consent: consent, start: start, expire: args.duration, recurring: recurring, viewOnly: viewOnly, port: port, responseid: 'meshctrl' }));
+                        client.send(JSON.stringify({ action: 'createDeviceShareLink', nodeid: args.id, guestname: args.add, p: p, consent: consent, start: start, expire: args.duration, recurring: recurring, viewOnly: viewOnly, port: port, responseid: 'meshctrl' }));
                     } else {
                         if ((start == null) && (end == null)) {
                             // Unlimited sharing
-                            ws.send(JSON.stringify({ action: 'createDeviceShareLink', nodeid: args.id, guestname: args.add, p: p, consent: consent, expire: 0, viewOnly: viewOnly, port: port, responseid: 'meshctrl' }));
+                            client.send(JSON.stringify({ action: 'createDeviceShareLink', nodeid: args.id, guestname: args.add, p: p, consent: consent, expire: 0, viewOnly: viewOnly, port: port, responseid: 'meshctrl' }));
                         } else {
                             // Time limited sharing
-                            ws.send(JSON.stringify({ action: 'createDeviceShareLink', nodeid: args.id, guestname: args.add, p: p, consent: consent, start: start, end: end, viewOnly: viewOnly, port: port, responseid: 'meshctrl' }));
+                            client.send(JSON.stringify({ action: 'createDeviceShareLink', nodeid: args.id, guestname: args.add, p: p, consent: consent, start: start, end: end, viewOnly: viewOnly, port: port, responseid: 'meshctrl' }));
                         }
                     }
                 } else if (args.remove) {
-                    ws.send(JSON.stringify({ action: 'removeDeviceShare', nodeid: args.id, publicid: args.remove, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'removeDeviceShare', nodeid: args.id, publicid: args.remove, responseid: 'meshctrl' }));
                 } else {
-                    ws.send(JSON.stringify({ action: 'deviceShares', nodeid: args.id, responseid: 'meshctrl' }));
+                    client.send(JSON.stringify({ action: 'deviceShares', nodeid: args.id, responseid: 'meshctrl' }));
                 }
                 break;
             }
             case 'deviceopenurl': {
-                ws.send(JSON.stringify({ action: 'msg', type: 'openUrl', nodeid: args.id, url: args.openurl, responseid: 'meshctrl' }));
+                client.send(JSON.stringify({ action: 'msg', type: 'openUrl', nodeid: args.id, url: args.openurl, responseid: 'meshctrl' }));
                 break;
             }
             case 'devicemessage': {
-                ws.send(JSON.stringify({ action: 'msg', type: 'messagebox', nodeid: args.id, title: args.title ? args.title : "MeshCentral", msg: args.msg, timeout: args.timeout ? args.timeout : 120000, responseid: 'meshctrl' }));
+                client.send(JSON.stringify({ action: 'msg', type: 'messagebox', nodeid: args.id, title: args.title ? args.title : "MeshCentral", msg: args.msg, timeout: args.timeout ? args.timeout : 120000, responseid: 'meshctrl' }));
                 break;
             }
             case 'devicetoast': {
-                ws.send(JSON.stringify({ action: 'toast', nodeids: [args.id], title: args.title ? args.title : "MeshCentral", msg: args.msg, responseid: 'meshctrl' }));
+                client.send(JSON.stringify({ action: 'toast', nodeids: [args.id], title: args.title ? args.title : "MeshCentral", msg: args.msg, responseid: 'meshctrl' }));
                 break;
             }
             case 'groupmessage': {
-                ws.send(JSON.stringify({ action: 'nodes', meshid: args.id, responseid: 'meshctrl' }));
+                client.send(JSON.stringify({ action: 'nodes', meshid: args.id, responseid: 'meshctrl' }));
                 break;
             }
             case 'grouptoast': {
-                ws.send(JSON.stringify({ action: 'nodes', meshid: args.id, responseid: 'meshctrl' }));
+                client.send(JSON.stringify({ action: 'nodes', meshid: args.id, responseid: 'meshctrl' }));
                 break;
             }
             case 'report': {
@@ -2029,11 +1986,11 @@ function serverConnect() {
                 }                    
                 if (end <= start) { console.log("End time must be ahead of start time."); process.exit(1); return; }
                 
-                ws.send(JSON.stringify({ action: 'report', type: reporttype, groupBy: reportgroupby, devGroup: args.devicegroup || null, start, end, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, tf: new Date().getTimezoneOffset(), showTraffic: args.hasOwnProperty('showtraffic'), l: 'en', responseid: 'meshctrl' }));
+                client.send(JSON.stringify({ action: 'report', type: reporttype, groupBy: reportgroupby, devGroup: args.devicegroup || null, start, end, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, tf: new Date().getTimezoneOffset(), showTraffic: args.hasOwnProperty('showtraffic'), l: 'en', responseid: 'meshctrl' }));
                 break;
             }
         }
-    });
+    }).catch(function () { }); // Connection failures are reported through the client's close and error events.
 
     function getSiteAdminRights(args) {
         var siteadmin = -1;
@@ -2069,15 +2026,14 @@ function serverConnect() {
         return siteadmin;
     }
 
-    ws.on('close', function () { process.exit(); });
-    ws.on('error', function (err) {
-        if (err.code == 'ENOTFOUND') { console.log('Unable to resolve ' + url); }
-        else if (err.code == 'ECONNREFUSED') { console.log('Unable to connect to ' + url); }
-        else { console.log('Unable to connect to ' + url); }
+    client.on('close', function () { process.exit(); });
+    client.on('error', function (err) {
+        // The client maps transport errors to actionable messages.
+        console.log(err.message);
         process.exit();
     });
 
-    ws.on('message', function incoming(rawdata) {
+    client.on('message', function incoming(rawdata) {
         var data = null;
         try { data = JSON.parse(rawdata); } catch (ex) { }
         if (data == null) { console.log('Unable to parse data: ' + rawdata); }
@@ -2185,8 +2141,8 @@ function serverConnect() {
                     if (args.powershell) { protocol = 6; } // PowerShell
                     if ((args.id.split('/').length != 3) && (settings.currentDomain != null)) { args.id = 'node/' + settings.currentDomain + '/' + args.id; }
                     var id = getRandomHex(6);
-                    ws.send(JSON.stringify({ action: 'msg', nodeid: args.id, type: 'tunnel', usage: 1, value: '*/meshrelay.ashx?p=' + protocol + '&nodeid=' + args.id + '&id=' + id + '&rauth=' + data.rcookie, responseid: 'meshctrl' }));
-                    connectTunnel(url.replace('/control.ashx', '/meshrelay.ashx?browser=1&p=' + protocol + '&nodeid=' + encodeURIComponent(args.id) + '&id=' + id + '&auth=' + data.cookie));
+                    client.send(JSON.stringify({ action: 'msg', nodeid: args.id, type: 'tunnel', usage: 1, value: '*/meshrelay.ashx?p=' + protocol + '&nodeid=' + args.id + '&id=' + id + '&rauth=' + data.rcookie, responseid: 'meshctrl' }));
+                    connectTunnel(client.url.replace('/control.ashx', '/meshrelay.ashx?browser=1&p=' + protocol + '&nodeid=' + encodeURIComponent(args.id) + '&id=' + id + '&auth=' + data.cookie));
                 }
                 break;
             }
@@ -2364,7 +2320,7 @@ function serverConnect() {
                             for (var i in ugroup.links) {
                                 if (i.startsWith('user/')) {
                                     usercount++;
-                                    ws.send(JSON.stringify({ action: 'removeuserfromusergroup', ugrpid: ugrpid, userid: i, responseid: 'meshctrl' }));
+                                    client.send(JSON.stringify({ action: 'removeuserfromusergroup', ugrpid: ugrpid, userid: i, responseid: 'meshctrl' }));
                                     console.log('Removing ' + i);
                                 }
                             }
@@ -2504,7 +2460,7 @@ function serverConnect() {
                         for (var i in data.nodes) {
                             for (let index = 0; index < data.nodes[i].length; index++) {
                                 const element = data.nodes[i][index];
-                                ws.send(JSON.stringify({ action: 'msg', type: 'messagebox', nodeid: element._id, title: args.title ? args.title : "MeshCentral", msg: args.msg, timeout: args.timeout ? args.timeout : 120000 }));
+                                client.send(JSON.stringify({ action: 'msg', type: 'messagebox', nodeid: element._id, title: args.title ? args.title : "MeshCentral", msg: args.msg, timeout: args.timeout ? args.timeout : 120000 }));
                             }
                         }
                     }
@@ -2519,7 +2475,7 @@ function serverConnect() {
                                 const element = data.nodes[i][index];
                                 nodes.push(element._id);
                             }
-                            ws.send(JSON.stringify({ action: 'toast', nodeids: nodes, title: args.title ? args.title : "MeshCentral", msg: args.msg, responseid: 'meshctrl' }));
+                            client.send(JSON.stringify({ action: 'toast', nodeids: nodes, title: args.title ? args.title : "MeshCentral", msg: args.msg, responseid: 'meshctrl' }));
                         }
                     }
                 }
@@ -2558,7 +2514,7 @@ function serverConnect() {
                     if (args.icon) { op.icon = parseInt(args.icon); if ((typeof op.icon != 'number') || isNaN(op.icon) || (op.icon < 1) || (op.icon > 8)) { console.log("Icon must be between 1 and 8."); process.exit(1); return; } }
                     if (args.consent) { op.consent = parseInt(args.consent); if ((typeof op.consent != 'number') || isNaN(op.consent) || (op.consent < 1)) { console.log("Invalid consent flags."); process.exit(1); return; } }
                     op.tags = tags;
-                    ws.send(JSON.stringify(op));
+                    client.send(JSON.stringify(op));
                 }
                 break;
             }
@@ -2700,7 +2656,7 @@ function serverConnect() {
             default: { break; }
         }
         //console.log('Data', data);
-        //setTimeout(function timeout() { ws.send(Date.now()); }, 500);
+        //setTimeout(function timeout() { client.send(Date.now()); }, 500);
     });
 }
 
@@ -2956,17 +2912,6 @@ function connectTunnel(url) {
             }
         });
     }
-}
-
-// Encode an object as a cookie using a key using AES-GCM. (key must be 32 bytes or more)
-function encodeCookie(o, key) {
-    try {
-        if (key == null) { return null; }
-        o.time = Math.floor(Date.now() / 1000); // Add the cookie creation time
-        const iv = Buffer.from(crypto.randomBytes(12), 'binary'), cipher = crypto.createCipheriv('aes-256-gcm', key.slice(0, 32), iv);
-        const crypted = Buffer.concat([cipher.update(JSON.stringify(o), 'utf8'), cipher.final()]);
-        return Buffer.concat([iv, cipher.getAuthTag(), crypted]).toString('base64').replace(/\+/g, '@').replace(/\//g, '$');
-    } catch (e) { return null; }
 }
 
 // Generate a random Intel AMT password
