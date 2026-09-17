@@ -54,6 +54,10 @@ const crypto = require('crypto');
  *                request), the ordered response array (several requests), or
  *                the handshake value (from). Returns the tool text.
  *   target       (args) => string used for the audit record, or null.
+ *   omitted      True on a command the bridge specification deliberately
+ *                leaves without a tool surface (file transfer). It keeps its
+ *                CLI command and its catalogue position; 'pending' keeps
+ *                meaning work remaining.
  *
  * @author Jupiter Belic
  * @license Apache-2.0
@@ -541,6 +545,17 @@ function pending(name, description, family) {
     };
 }
 
+/**
+* A command deliberately left without a tool surface by the bridge
+* specification, so 'pending' keeps meaning work remaining. It keeps its
+* catalogue position and its CLI command.
+*/
+function omitted(name, description, family) {
+    const entry = pending(name, description, family);
+    entry.omitted = true;
+    return entry;
+}
+
 // ---------------------------------------------------------------------------
 // Device action helpers: the arguments meshctrl sends to the server, here
 // shared between the protocol mapping and the result formatting.
@@ -901,6 +916,197 @@ function readAgentErrorLog() {
         throw new Error('Unable to read the agent error log at ' + filePath + ': ' + ex.message);
     }
     return indexAgentErrorLog(text);
+}
+
+// ---------------------------------------------------------------------------
+// Edit-device helpers: the tag arithmetic and request meshctrl's editdevice
+// performs, shared by its direct and read-then-write protocol paths.
+// ---------------------------------------------------------------------------
+
+/** Find one device by its exact id in a nodes response, as meshctrl does. */
+function findNode(nodes, id) {
+    if ((nodes == null) || (typeof nodes !== 'object')) { return null; }
+    for (const meshid of Object.keys(nodes)) {
+        const group = nodes[meshid];
+        if (!Array.isArray(group)) { continue; }
+        for (const node of group) {
+            if (node._id === id) { return node; }
+        }
+    }
+    return null;
+}
+
+/** Apply the comma separated addtag and removetag values meshctrl accepts. */
+function editDeviceTags(currentTags, args) {
+    let tags = Array.isArray(currentTags) ? currentTags.slice() : [];
+    if (args.addtag) {
+        for (const addtag of String(args.addtag).split(',')) {
+            const tag = addtag.trim();
+            if (tag && (tags.indexOf(tag) < 0)) { tags.push(tag); }
+        }
+    }
+    if (args.removetag) {
+        const removetags = String(args.removetag).split(',').map((tag) => tag.trim());
+        tags = tags.filter((tag) => (removetags.indexOf(tag) < 0));
+    }
+    return tags;
+}
+
+/**
+* The changedevice parameters meshctrl sends. currentTags is the tag list read
+* from the device when addtag or removetag was used, and null on the direct
+* path, where the tags argument replaces the tag list wholesale.
+*/
+function editDeviceParams(args, currentTags) {
+    let icon = null, consent = null;
+    if (args.icon) {
+        icon = parseInt(args.icon, 10);
+        if (isNaN(icon) || (icon < 1) || (icon > 8)) { throw new Error('Icon must be between 1 and 8.'); }
+    }
+    if (args.consent) {
+        consent = parseInt(args.consent, 10);
+        if (isNaN(consent) || (consent < 1)) { throw new Error('Invalid consent flags.'); }
+    }
+    const op = { nodeid: args.id };
+    if (typeof args.name == 'string') { op.name = args.name; }
+    if (args.desc) { op.desc = args.desc; }
+    if (currentTags != null) { op.tags = editDeviceTags(currentTags, args); }
+    else if (args.tags) { op.tags = String(args.tags).split(','); }
+    if (icon != null) { op.icon = icon; }
+    if (consent != null) { op.consent = consent; }
+    return op;
+}
+
+/** Render the last response of a device edit, the changedevice reply. */
+function formatDeviceChange(responses) {
+    return formatActionResult(responses[responses.length - 1]);
+}
+
+/** Render an invitation link response the way meshctrl prints it. */
+function formatInviteLink(response) {
+    return response.url ? String(response.url) : String(response.result);
+}
+
+// ---------------------------------------------------------------------------
+// Config helpers: the local config.json operations meshctrl's config command
+// performs. Only the operation flags are declared here; the CLI's free-form
+// domain value flags (--title, --newAccounts and the like) cannot be expressed
+// as fixed tool schema arguments, so the tool matches the CLI invoked without
+// any of them.
+// ---------------------------------------------------------------------------
+
+/** The config.json meshctrl would load, in its search order, or null. */
+function configFilePath() {
+    const candidates = [
+        path.join(process.cwd(), 'config.json'),
+        path.join(process.cwd(), 'meshcentral-data', 'config.json'),
+        path.join(__dirname, 'config.json'),
+        path.join(__dirname, 'meshcentral-data', 'config.json'),
+        path.join(__dirname, '..', 'meshcentral-data', 'config.json'),
+        path.join(__dirname, '..', '..', 'meshcentral-data', 'config.json')
+    ];
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) { return candidate; }
+    }
+    return null;
+}
+
+/** The help meshctrl prints when the config command is given no operation. */
+function configHelpText() {
+    return [
+        'Perform operations on the config.json file. Example usage:',
+        '',
+        '  MeshCtrl config --show',
+        '',
+        'Optional arguments:',
+        '',
+        '  --show                        - Display the config.json file.',
+        '  --listdomains                 - Display non-default domains.',
+        '  --adddomain [domain]          - Add a domain.',
+        '  --removedomain [domain]       - Remove a domain.',
+        '  --settodomain [domain]        - Set values to the domain.',
+        '  --removefromdomain [domain]   - Remove values from the domain.',
+        '',
+        'With adddomain, removedomain, settodomain and removefromdomain you can add the key and value pair. For example:',
+        '',
+        '  --adddomain "MyDomain" --title "My Server Name" --newAccounts false',
+        '  --settodomain "MyDomain" --themePack "Stylish-UI"',
+        '  --settodomain "MyDomain" --title "My Server Name"',
+        '  --removefromdomain "MyDomain" --title'
+    ].join('\n');
+}
+
+/**
+* Perform the meshctrl config operations against the local config.json and
+* return { action, messages, config?, domains? } for formatConfig to render.
+* Read and parse failures throw the message the CLI prints.
+*/
+function readConfig(args) {
+    const filePath = configFilePath();
+    if (filePath == null) { throw new Error('Unable to find config.json.'); }
+    let text = null;
+    try { text = fs.readFileSync(filePath, 'utf8'); } catch (ex) { throw new Error('Error: Unable to read config.json'); }
+    let config = null;
+    try { config = JSON.parse(text); } catch (ex) { throw new Error('ERROR: Unable to parse ' + filePath + '.'); }
+
+    const messages = [];
+    let didSomething = 0, configChange = false;
+    if (args.adddomain != null) {
+        didSomething++;
+        if (config.domains == null) { config.domains = {}; }
+        if (config.domains[args.adddomain] != null) { messages.push('Error: Domain "' + args.adddomain + '" already exists'); }
+        else { config.domains[args.adddomain] = {}; configChange = true; }
+    }
+    if (args.removedomain != null) {
+        didSomething++;
+        if (config.domains == null) { config.domains = {}; }
+        if (config.domains[args.removedomain] == null) { messages.push('Error: Domain "' + args.removedomain + '" does not exist'); }
+        else { delete config.domains[args.removedomain]; configChange = true; }
+    }
+    if (args.settodomain != null) {
+        didSomething++;
+        if (config.domains == null) { config.domains = {}; }
+        if (config.domains[args.settodomain] == null) { messages.push('Error: Domain "' + args.settodomain + '" does not exist'); }
+    }
+    if (args.removefromdomain != null) {
+        didSomething++;
+        if (config.domains == null) { config.domains = {}; }
+        if (config.domains[args.removefromdomain] == null) { messages.push('Error: Domain "' + args.removefromdomain + '" does not exist'); }
+    }
+    if (configChange) {
+        try { fs.writeFileSync(filePath, JSON.stringify(config, null, 2)); } catch (ex) { throw new Error('Error: Unable to read config.json'); }
+    }
+    if (args.show) { return { action: 'show', messages: messages, config: config }; }
+    if (args.listdomains) {
+        if (config.domains == null) { return { action: 'listdomains', messages: messages, domains: null }; }
+        const domains = [];
+        for (const name of Object.keys(config.domains)) {
+            if ((name != '') && (name[0] != '_')) { domains.push(name); }
+        }
+        return { action: 'listdomains', messages: messages, domains: domains };
+    }
+    if (didSomething === 0) { return { action: 'help', messages: messages }; }
+    return { action: 'done', messages: messages };
+}
+
+/** Render a config operation the way meshctrl prints it. */
+function formatConfig(result) {
+    const lines = result.messages.slice();
+    if (result.action === 'show') { lines.push(JSON.stringify(result.config, null, 2)); }
+    else if (result.action === 'listdomains') {
+        if (result.domains == null) { lines.push('No domains found.'); }
+        else { for (const domain of result.domains) { lines.push(domain); } }
+    } else if (result.action === 'help') { lines.push(configHelpText()); }
+    else { lines.push('Done.'); }
+    return lines.join('\n');
+}
+
+/** The audit target of a config operation: the domain it names, or the file. */
+function configTarget(args) {
+    for (const name of ['adddomain', 'removedomain', 'settodomain', 'removefromdomain']) {
+        if (args[name] != null) { return args[name]; }
+    }
+    return 'config';
 }
 
 const commands = [
@@ -1417,10 +1623,103 @@ const commands = [
         format: formatActionResult,
         target: (args) => args.userid
     },
-    pending('sendinviteemail', 'Send an agent installation invitation email for a device group.', 'device'),
-    pending('generateinvitelink', 'Create an agent installation invitation link for a device group.', 'device'),
-    pending('config', 'Show or change the local config.json file (domains and domain values).', 'local'),
-    pending('movetodevicegroup', 'Move a device to another device group.', 'device'),
+    {
+        name: 'sendinviteemail',
+        description: 'Send an agent installation invitation email for a device group, named by group id or group name, to one email address, with an optional recipient name and message.',
+        family: 'device',
+        args: [
+            { name: 'meshid', type: 'string', required: false, cli: 'id', description: 'Device group id (mesh//...).' },
+            { name: 'group', type: 'string', required: false, description: 'Device group name.' },
+            { name: 'email', type: 'string', required: true, description: 'Email address to send the invitation to.' },
+            { name: 'name', type: 'string', required: false, description: 'Recipient name included in the email.' },
+            { name: 'message', type: 'string', required: false, description: 'Message included in the email.' }
+        ],
+        auth: { user: true, rights: [] },
+        cli: { name: 'sendinviteemail' },
+        mcp: { name: 'mesh_send_invite_email' },
+        protocol: {
+            action: 'inviteAgent',
+            params: (args) => {
+                requireDeviceGroup(args);
+                const op = { email: args.email, name: '', os: '0' };
+                if (args.meshid) { op.meshid = args.meshid; } else if (args.group) { op.meshname = args.group; }
+                if (args.name) { op.name = args.name; }
+                if (args.message) { op.msg = args.message; }
+                return op;
+            }
+        },
+        format: formatActionResult,
+        target: (args) => ((args.meshid != null) ? args.meshid : args.group)
+    },
+    {
+        name: 'generateinvitelink',
+        description: 'Create an agent installation invitation link for a device group, named by group id or group name, valid for a number of hours or forever with 0, and return the URL.',
+        family: 'device',
+        args: [
+            { name: 'meshid', type: 'string', required: false, cli: 'id', description: 'Device group id (mesh//...).' },
+            { name: 'group', type: 'string', required: false, description: 'Device group name.' },
+            { name: 'hours', type: 'number', required: true, description: 'Validity period in hours, or 0 for an unlimited link.' },
+            { name: 'flags', type: 'number', required: false, description: 'Link mode: 0 interactive and background, 1 interactive only, 2 background only.' }
+        ],
+        auth: { user: true, rights: [] },
+        cli: { name: 'generateinvitelink' },
+        mcp: { name: 'mesh_generate_invite_link' },
+        protocol: {
+            action: 'createInviteLink',
+            params: (args) => {
+                requireDeviceGroup(args);
+                const op = { expire: args.hours, flags: 0 };
+                if (args.meshid) { op.meshid = args.meshid; } else if (args.group) { op.meshname = args.group; }
+                if (args.flags) { op.flags = args.flags; }
+                return op;
+            }
+        },
+        format: formatInviteLink,
+        target: (args) => ((args.meshid != null) ? args.meshid : args.group)
+    },
+    {
+        name: 'config',
+        description: 'Show or change the local config.json file of the bridge host, as the meshctrl config command does: show the file, list the non-default domains, add or remove a domain. The CLI also accepts free-form domain value flags, which a fixed tool schema cannot express, so only the operation flags are declared here.',
+        family: 'local',
+        args: [
+            { name: 'show', type: 'boolean', required: false, description: 'Return the config.json file as JSON.' },
+            { name: 'listdomains', type: 'boolean', required: false, description: 'List the non-default domains, one per line.' },
+            { name: 'adddomain', type: 'string', required: false, description: 'Add a domain with this name.' },
+            { name: 'removedomain', type: 'string', required: false, description: 'Remove the domain with this name.' },
+            { name: 'settodomain', type: 'string', required: false, description: 'Select a domain for value changes; without the CLI free-form value flags this performs no change.' },
+            { name: 'removefromdomain', type: 'string', required: false, description: 'Remove values from a domain; without the CLI free-form value flags this performs no change.' }
+        ],
+        auth: { user: true, rights: [] },
+        cli: { name: 'config' },
+        mcp: { name: 'mesh_config' },
+        protocol: { local: (args) => readConfig(args) },
+        format: formatConfig,
+        target: configTarget
+    },
+    {
+        name: 'movetodevicegroup',
+        description: 'Move a device to another device group, named by group id or group name.',
+        family: 'device',
+        args: [
+            { name: 'meshid', type: 'string', required: false, cli: 'id', description: 'Destination device group id (mesh//...).' },
+            { name: 'group', type: 'string', required: false, description: 'Destination device group name.' },
+            { name: 'devid', type: 'string', required: true, description: 'Device id (node//...) to move.' }
+        ],
+        auth: { user: true, rights: ['managecomputers', 'editmesh'] },
+        cli: { name: 'movetodevicegroup' },
+        mcp: { name: 'mesh_move_to_device_group' },
+        protocol: {
+            action: 'changeDeviceMesh',
+            params: (args) => {
+                requireDeviceGroup(args);
+                const op = { nodeids: [args.devid] };
+                if (args.meshid) { op.meshid = args.meshid; } else if (args.group) { op.meshname = args.group; }
+                return op;
+            }
+        },
+        format: formatActionResult,
+        target: (args) => args.devid
+    },
     {
         name: 'deviceinfo',
         description: 'Report detailed information about one device as JSON: the node record, the last connection record, agent system information and network interfaces. System and network sections are omitted when the device is offline.',
@@ -1440,10 +1739,105 @@ const commands = [
         format: formatDeviceInfo,
         target: (args) => args.id
     },
-    pending('removedevice', 'Delete a device.', 'device'),
-    pending('editdevice', 'Change a device name, description, tags, icon or consent flags.', 'device'),
-    pending('addlocaldevice', 'Add a local (non-agent) device entry.', 'device'),
-    pending('addamtdevice', 'Add an Intel AMT device.', 'device'),
+    {
+        name: 'removedevice',
+        description: 'Delete a device record and its stored data from the server, requires uninstall rights on the device.',
+        family: 'device',
+        args: [
+            { name: 'id', type: 'string', required: true, description: 'Device id (node//...).' }
+        ],
+        auth: { user: true, rights: ['uninstall'] },
+        cli: { name: 'removedevice' },
+        mcp: { name: 'mesh_remove_device' },
+        protocol: {
+            action: 'removedevices',
+            params: (args) => ({ nodeids: [args.id] })
+        },
+        format: formatActionResult,
+        target: (args) => args.id
+    },
+    {
+        name: 'editdevice',
+        description: 'Change a device name, description, tags, icon or consent flags. Adding or removing tags reads the device first so the existing tags are preserved.',
+        family: 'device',
+        args: [
+            { name: 'id', type: 'string', required: true, description: 'Device id (node//...).' },
+            { name: 'name', type: 'string', required: false, description: 'New device name.' },
+            { name: 'desc', type: 'string', required: false, description: 'New device description.' },
+            { name: 'tags', type: 'string', required: false, description: 'Comma separated tags that replace all existing tags.' },
+            { name: 'addtag', type: 'string', required: false, description: 'Comma separated tags to add to the existing tags.' },
+            { name: 'removetag', type: 'string', required: false, description: 'Comma separated tags to remove from the existing tags.' },
+            { name: 'icon', type: 'number', required: false, description: 'Device icon number, 1 to 8.' },
+            { name: 'consent', type: 'number', required: false, description: 'User consent flags: the sum of 1 desktop notify, 2 terminal notify, 4 files notify, 8 desktop prompt, 16 terminal prompt, 32 files prompt, 64 desktop privacy bar.' }
+        ],
+        auth: { user: true, rights: ['managecomputers'] },
+        cli: { name: 'editdevice' },
+        mcp: { name: 'mesh_edit_device' },
+        protocol: [
+            {
+                action: (args) => ((args.addtag || args.removetag) ? 'nodes' : 'changedevice'),
+                params: (args) => ((args.addtag || args.removetag) ? { id: args.id } : editDeviceParams(args, null)),
+                follow: (response, args) => {
+                    if (!args.addtag && !args.removetag) { return []; }
+                    const node = findNode(response.nodes, args.id);
+                    if (node == null) { throw new Error('Node not found.'); }
+                    return [{ action: 'changedevice', params: () => editDeviceParams(args, Array.isArray(node.tags) ? node.tags : []) }];
+                }
+            }
+        ],
+        format: formatDeviceChange,
+        target: (args) => args.id
+    },
+    {
+        name: 'addlocaldevice',
+        description: 'Add a local (agent-less) device entry to a device group, with its name, hostname and optional device type.',
+        family: 'device',
+        args: [
+            { name: 'meshid', type: 'string', required: true, cli: 'id', description: 'Device group id (mesh//...).' },
+            { name: 'devicename', type: 'string', required: true, description: 'Name of the new device.' },
+            { name: 'hostname', type: 'string', required: true, description: 'Device hostname or IP address.' },
+            { name: 'type', type: 'number', required: false, description: 'Device type: 4 Windows RDP (default), 6 Linux SSH/SCP/VNC, 29 macOS SSH/SCP/VNC.' }
+        ],
+        auth: { user: true, rights: ['managecomputers'] },
+        cli: { name: 'addlocaldevice' },
+        mcp: { name: 'mesh_add_local_device' },
+        protocol: {
+            action: 'addlocaldevice',
+            params: (args) => {
+                const op = { type: 4, meshid: args.meshid, devicename: args.devicename, hostname: args.hostname };
+                if (args.type) { op.type = args.type; }
+                return op;
+            }
+        },
+        format: formatActionResult,
+        target: (args) => args.meshid
+    },
+    {
+        name: 'addamtdevice',
+        description: 'Add an Intel AMT device entry to an Intel AMT device group, with its name, hostname and AMT credentials; TLS can be turned off for the connection.',
+        family: 'device',
+        args: [
+            { name: 'meshid', type: 'string', required: true, cli: 'id', description: 'Intel AMT device group id (mesh//...).' },
+            { name: 'devicename', type: 'string', required: true, description: 'Name of the new device.' },
+            { name: 'hostname', type: 'string', required: true, description: 'Device hostname or IP address.' },
+            { name: 'user', type: 'string', required: true, description: 'Intel AMT username.' },
+            { name: 'pass', type: 'string', required: true, description: 'Intel AMT password.' },
+            { name: 'notls', type: 'boolean', required: false, description: 'Connect without TLS security.' }
+        ],
+        auth: { user: true, rights: ['managecomputers'] },
+        cli: { name: 'addamtdevice' },
+        mcp: { name: 'mesh_add_amt_device' },
+        protocol: {
+            action: 'addamtdevice',
+            params: (args) => {
+                const op = { amttls: 1, meshid: args.meshid, devicename: args.devicename, hostname: args.hostname, amtusername: args.user, amtpassword: args.pass };
+                if (args.notls) { op.amttls = 0; }
+                return op;
+            }
+        },
+        format: formatActionResult,
+        target: (args) => args.meshid
+    },
     {
         name: 'addusergroup',
         description: 'Create a new user group with an optional description, only through an account with user group administration rights.',
@@ -1543,8 +1937,8 @@ const commands = [
         format: formatShellCommand,
         target: (args) => args.id
     },
-    pending('upload', 'Upload a file to a remote device.', 'device'),
-    pending('download', 'Download a file from a remote device.', 'device'),
+    omitted('upload', 'Upload a file to a remote device. Deliberately out of scope: the bridge specification excludes file transfer, so this command keeps its CLI surface but has no tool.', 'device'),
+    omitted('download', 'Download a file from a remote device. Deliberately out of scope: the bridge specification excludes file transfer, so this command keeps its CLI surface but has no tool.', 'device'),
     {
         name: 'deviceopenurl',
         description: 'Open a URL in the default browser on a remote device. The server acknowledges routing the request; the device does not confirm that the page opened.',
