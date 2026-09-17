@@ -4,7 +4,7 @@ SMBIOS 2.8.0 present.
 
 Handle 0x0100, DMI type 1, 27 bytes
 System Information
-	Manufacturer: Example Inc.
+	Manufacturer: Example Incorporated
 	Product Name: Example Board
 	Version: 1.0
 	Serial Number: 008689
@@ -16,8 +16,9 @@ Header and Data:
 	01 1B 00 01 01 02 03 04 00 00 00 00 00 00 00 00
 	00 00 00 00 00 00 00 00 06 05 06
 Strings:
-	45 78 61 6D 70 6C 65 20 49 6E 63 2E 00
-	"Example Inc."
+	45 78 61 6D 70 6C 65 20 49 6E 63 6F 72 70 6F 72
+	61 74 65 64 00
+	"Example Incorporated"
 	45 78 61 6D 70 6C 65 20 42 6F 61 72 64 00
 	"Example Board"
 	31 2E 30 00
@@ -33,7 +34,7 @@ Handle 0x2700, DMI type 39, 22 bytes
 Power Supply
 	Location: 20
 	Device Name: 008689
-	Manufacturer: Example PS
+	Manufacturer: Example Power Supply Unit
 	Serial Number: 0807
 Header and Data:
 	27 16 00 27 01 01 02 03 04 00 00 00 00 00 00 00
@@ -43,8 +44,9 @@ Strings:
 	"20"
 	30 30 38 36 38 39 00
 	"008689"
-	45 78 61 6D 70 6C 65 20 50 53 00
-	"Example PS"
+	45 78 61 6D 70 6C 65 20 50 6F 77 65 72 20 53 75
+	70 70 6C 79 20 55 6E 69 74 00
+	"Example Power Supply Unit"
 	30 38 30 37 00
 	"0807"
 

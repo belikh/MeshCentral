@@ -67,8 +67,8 @@ test('dmidecode 3.x decoded lines never become string bytes', { skip: DMIDECODE_
     const parsed = parseFixture('dmidecode-3x.txt');
 
     // _strings keeps the NUL terminator that the parser walks over today.
-    assert.deepEqual(parsed[1][0]._strings, ['Example Inc.\u0000', 'Example Board\u0000', '1.0\u0000', '008689\u0000', '20\u0000', '0807\u0000']);
-    assert.deepEqual(parsed[39][0]._strings, ['20\u0000', '008689\u0000', 'Example PS\u0000', '0807\u0000']);
+    assert.deepEqual(parsed[1][0]._strings, ['Example Incorporated\u0000', 'Example Board\u0000', '1.0\u0000', '008689\u0000', '20\u0000', '0807\u0000']);
+    assert.deepEqual(parsed[39][0]._strings, ['20\u0000', '008689\u0000', 'Example Power Supply Unit\u0000', '0807\u0000']);
 });
 
 test('dmidecode 2.x quoted output canonicalises identically to 3.x', { skip: DMIDECODE_SKIP }, () => {
@@ -79,7 +79,7 @@ test('dmidecode 2.x quoted output still parses strings and AMT records', { skip:
     const parsed = parseFixture('dmidecode-2x.txt');
 
     assert.deepEqual(Object.keys(parsed).sort(), ['1', '130', '131', '39']);
-    assert.deepEqual(parsed[39][0]._strings, ['20\u0000', '008689\u0000', 'Example PS\u0000', '0807\u0000']);
+    assert.deepEqual(parsed[39][0]._strings, ['20\u0000', '008689\u0000', 'Example Power Supply Unit\u0000', '0807\u0000']);
 
     const info = smbios.parse(parseFixture('dmidecode-2x.txt'));
     assert.equal(info.amtInfo.AMT, true);
