@@ -225,6 +225,14 @@ function formatUsers(response, args) {
     return lines.join('\n');
 }
 
+/** Render the per-account web session counts meshctrl prints. */
+function formatUserSessions(response) {
+    const sessions = ((response != null) && (response.wssessions != null)) ? response.wssessions : {};
+    const userIds = Object.keys(sessions);
+    if (userIds.length === 0) { return 'No active user sessions.'; }
+    return userIds.map((userid) => userid + ', ' + ((sessions[userid] > 1) ? (sessions[userid] + ' sessions.') : '1 session.')).join('\n');
+}
+
 function formatUserGroups(response) {
     return JSON.stringify((response.ugroups != null) ? response.ugroups : {}, null, 2);
 }
@@ -260,6 +268,22 @@ function formatEvents(response, args) {
         for (const event of events) { lines.push(csvRow([event.time, event.etype, event.action, event.nodeid, event.userid, event.msg])); }
     }
     return lines.join('\n');
+}
+
+/**
+* Render the account event snapshot as JSON. The CLI streams live events and
+* prints each one; the bridge returns the server's snapshot of the same events,
+* filtered on the same event actions the CLI filters on.
+*/
+function formatShownEvents(response, args) {
+    const events = ((response != null) && Array.isArray(response.events)) ? response.events : [];
+    let selected = events;
+    if (args.filter != null) {
+        const filters = String(args.filter).split(',');
+        selected = events.filter((event) => (filters.indexOf(event.action) >= 0));
+    }
+    if (selected.length === 0) { return 'No events.'; }
+    return JSON.stringify(selected, null, 2);
 }
 
 function formatServerVersion(response) {
@@ -556,6 +580,39 @@ function formatRunCommand(response, args) {
 
 function formatShellCommand(response, args) {
     return formatCommandOutput(response, 'Command accepted by the server.');
+}
+
+/** The device ids of a nodes response, listed by device group in server order. */
+function deviceIdsByGroup(nodes) {
+    const groups = [];
+    if ((nodes == null) || (typeof nodes !== 'object')) { return groups; }
+    for (const meshid of Object.keys(nodes)) {
+        const group = nodes[meshid];
+        if (!Array.isArray(group)) { continue; }
+        const ids = [];
+        for (const node of group) { ids.push(node._id); }
+        groups.push(ids);
+    }
+    return groups;
+}
+
+/** The number of devices the first response of a fan-out carries. */
+function countGroupDevices(responses) {
+    return flattenNodes(((responses != null) && (responses[0] != null)) ? responses[0].nodes : null).length;
+}
+
+/** Render the outcome of sending a message box to every device in a group. */
+function formatGroupMessage(responses) {
+    const count = countGroupDevices(responses);
+    if (count === 0) { return 'No devices in this device group.'; }
+    return 'Message box sent to ' + count + ' device' + ((count === 1) ? '.' : 's.');
+}
+
+/** Render the outcome of sending a toast to every device in a group. */
+function formatGroupToast(responses) {
+    const count = countGroupDevices(responses);
+    if (count === 0) { return 'No devices in this device group.'; }
+    return 'Toast notification sent to ' + count + ' device' + ((count === 1) ? '.' : 's.');
 }
 
 const POWER_ACTIONS = [
@@ -897,7 +954,18 @@ const commands = [
         format: formatUsers,
         target: (args) => ((args.filter != null) ? args.filter : 'all')
     },
-    pending('listusersessions', 'List the number of active web sessions for each online user account.', 'inspection'),
+    {
+        name: 'listusersessions',
+        description: 'List the number of active web sessions for each online user account, one line per account with the account id and its session count.',
+        family: 'inspection',
+        args: [],
+        auth: { user: true, rights: ['manageusers'] },
+        cli: { name: 'listusersessions' },
+        mcp: { name: 'mesh_list_user_sessions' },
+        protocol: { action: 'wssessioncount', params: () => ({}), matchAction: true },
+        format: formatUserSessions,
+        target: null
+    },
     {
         name: 'listdevicegroups',
         description: 'List device groups visible to the authenticated account, one per line with group id and name. Optionally test whether a group id or name exists, or render ids in hex.',
@@ -1194,8 +1262,42 @@ const commands = [
         format: formatActionResult,
         target: (args) => ((args.meshid != null) ? args.meshid : args.group)
     },
-    pending('broadcast', 'Display a message to all online users, or to a single user account.', 'device'),
-    pending('showevents', 'Stream server events for the account as JSON until interrupted.', 'inspection'),
+    {
+        name: 'broadcast',
+        description: 'Display a message to every logged in user account, or to a single account when user is set. Requires account administration rights on the server.',
+        family: 'device',
+        args: [
+            { name: 'msg', type: 'string', required: true, description: 'Message to display.' },
+            { name: 'user', type: 'string', required: false, description: 'Send the message to this user account (user//...) instead of every logged in user.' }
+        ],
+        auth: { user: true, rights: ['manageusers'] },
+        cli: { name: 'broadcast' },
+        mcp: { name: 'mesh_broadcast' },
+        protocol: {
+            action: 'userbroadcast',
+            params: (args) => {
+                const op = { msg: args.msg };
+                if (args.user) { op.userid = args.user; }
+                return op;
+            }
+        },
+        format: formatActionResult,
+        target: (args) => ((args.user != null) ? args.user : 'all')
+    },
+    {
+        name: 'showevents',
+        description: 'Report the recent server events of the authenticated account as JSON, optionally filtered to a comma separated list of event actions. The CLI streams events until interrupted; a request/response bridge returns the server\'s snapshot of the same events instead.',
+        family: 'inspection',
+        args: [
+            { name: 'filter', type: 'string', required: false, description: 'Comma separated event action names to include, for example nodeconnect,changenode. Default all events.' }
+        ],
+        auth: { user: true, rights: [] },
+        cli: { name: 'showevents' },
+        mcp: { name: 'mesh_show_events' },
+        protocol: { action: 'events', params: () => ({}), matchAction: true },
+        format: formatShownEvents,
+        target: (args) => ((args.filter != null) ? args.filter : 'all')
+    },
     {
         name: 'addusertodevicegroup',
         description: 'Grant a user account permissions on a device group. The per-group rights are the sum of the selected flags; fullrights grants every right.',
@@ -1693,8 +1795,70 @@ const commands = [
         format: formatReport,
         target: (args) => (args.devicegroup || args.type)
     },
-    pending('grouptoast', 'Display a toast notification on every device in a device group.', 'device'),
-    pending('groupmessage', 'Display a message box on every device in a device group.', 'device'),
+    {
+        name: 'grouptoast',
+        description: 'Display a toast notification on every device in a device group, one request per device group. The server acknowledges routing the requests; the devices do not confirm that the toasts were shown.',
+        family: 'device',
+        args: [
+            { name: 'id', type: 'string', required: true, description: 'Device group id (mesh//...).' },
+            { name: 'msg', type: 'string', required: true, description: 'Message to display.' },
+            { name: 'title', type: 'string', required: false, description: 'Toast title, default "MeshCentral".' }
+        ],
+        auth: { user: true, rights: ['remotecontrol'] },
+        cli: { name: 'grouptoast' },
+        mcp: { name: 'mesh_group_toast' },
+        protocol: [
+            {
+                action: 'nodes',
+                params: (args) => ({ meshid: args.id }),
+                follow: (response, args) => {
+                    const specs = [];
+                    for (const nodeids of deviceIdsByGroup(response.nodes)) {
+                        if (nodeids.length === 0) { continue; }
+                        specs.push({
+                            action: 'toast',
+                            params: () => ({ nodeids: nodeids, title: (args.title ? args.title : 'MeshCentral'), msg: args.msg })
+                        });
+                    }
+                    return specs;
+                }
+            }
+        ],
+        format: formatGroupToast,
+        target: (args) => args.id
+    },
+    {
+        name: 'groupmessage',
+        description: 'Display a message box on every device in a device group, one request per device. The server acknowledges routing the requests; the devices do not confirm that the boxes were shown. A box closes after the timeout, or after the CLI default of two minutes.',
+        family: 'device',
+        args: [
+            { name: 'id', type: 'string', required: true, description: 'Device group id (mesh//...).' },
+            { name: 'msg', type: 'string', required: true, description: 'Message to display.' },
+            { name: 'title', type: 'string', required: false, description: 'Message box title, default "MeshCentral".' },
+            { name: 'timeout', type: 'number', required: false, description: 'Milliseconds before the message box vanishes; the CLI default is 120000.' }
+        ],
+        auth: { user: true, rights: ['remotecontrol'] },
+        cli: { name: 'groupmessage' },
+        mcp: { name: 'mesh_group_message' },
+        protocol: [
+            {
+                action: 'nodes',
+                params: (args) => ({ meshid: args.id }),
+                follow: (response, args) => {
+                    const specs = [];
+                    for (const node of flattenNodes(response.nodes)) {
+                        specs.push({
+                            action: 'msg',
+                            params: () => ({ type: 'messagebox', nodeid: node.id, title: (args.title ? args.title : 'MeshCentral'), msg: args.msg, timeout: (args.timeout ? args.timeout : 120000) })
+                        });
+                    }
+                    return specs;
+                }
+            }
+        ],
+        format: formatGroupMessage,
+        target: (args) => args.id
+    },
     {
         name: 'webrelay',
         description: 'Create an HTTP or HTTPS web relay link for a remote device and return its URL. The server acknowledges the request and builds the link; opening the link is left to the caller.',

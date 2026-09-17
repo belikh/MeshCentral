@@ -30,6 +30,7 @@ const NODE_BRAVO = 'node//BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
 const TOOL_NAMES = [
     'mesh_edit_user',
     'mesh_list_users',
+    'mesh_list_user_sessions',
     'mesh_list_groups',
     'mesh_list_devices',
     'mesh_list_device_group_users',
@@ -43,6 +44,8 @@ const TOOL_NAMES = [
     'mesh_add_device_group',
     'mesh_remove_device_group',
     'mesh_edit_device_group',
+    'mesh_broadcast',
+    'mesh_show_events',
     'mesh_add_user_to_device_group',
     'mesh_remove_user_from_device_group',
     'mesh_add_user_to_device',
@@ -64,6 +67,8 @@ const TOOL_NAMES = [
     'mesh_index_agent_error_log',
     'mesh_agent_download',
     'mesh_report',
+    'mesh_group_toast',
+    'mesh_group_message',
     'mesh_web_relay'
 ];
 
