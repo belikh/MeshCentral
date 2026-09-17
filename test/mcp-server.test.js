@@ -261,13 +261,14 @@ test('the entry point reports authentication failures actionably', { timeout: 15
     assert.match(result.stderr, /Authentication token required, use --token \[number\]\./);
 });
 
-test('startup failures redact credentials carried in the url', { timeout: 15000 }, async () => {
+test('startup failures never expose credentials carried in the url', { timeout: 15000 }, async () => {
     const port = await closedPort();
-    const result = await runChild(['--url', 'ws://127.0.0.1:' + port + '?key=SECRETLOGINKEY', '--connecttimeout', '1000'], 5000);
+    const result = await runChild(['--url', 'ws://127.0.0.1:' + port + '?key=SECRETLOGINKEY&auth=SECRETCOOKIE', '--connecttimeout', '1000'], 5000);
     assert.equal(result.timedOut, false);
     assert.equal(result.code, 1);
-    assert.doesNotMatch(result.stderr, /SECRETLOGINKEY/);
-    assert.match(result.stderr, /\[redacted\]/);
+    assert.doesNotMatch(result.stderr, /SECRETLOGINKEY|SECRETCOOKIE/);
+    assert.doesNotMatch(result.stderr, /[?&](?:key|auth)=/i);
+    assert.match(result.stderr, /Unable to connect to /);
 });
 
 test('--help prints usage to stderr without touching stdout', { timeout: 15000 }, async () => {

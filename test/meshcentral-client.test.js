@@ -298,6 +298,10 @@ test('a login key file signs an auth cookie for the configured account', { timeo
     t.after(() => client.close());
     await client.connect();
 
+    assert.equal(client.controlUrl, server.url + '/control.ashx');
+    assert.doesNotMatch(client.controlUrl, /[?&](?:key|auth)=/i);
+    assert.match(client.url, /[?&]auth=/);
+
     const auth = new URL(captured.url, 'ws://localhost').searchParams.get('auth');
     assert.ok(auth != null, 'auth cookie was sent');
     const raw = Buffer.from(auth.replace(/@/g, '+').replace(/\$/g, '/'), 'base64');
@@ -309,17 +313,41 @@ test('a login key file signs an auth cookie for the configured account', { timeo
     assert.equal(cookie.domainid, 'example');
 });
 
-test('a ?key= login key is preserved on the control url', { timeout: 10000 }, async (t) => {
+test('a ?key= login key connects but is kept out of the log-safe url', { timeout: 10000 }, async (t) => {
     let captured = null;
     const server = await createServer((ws, req) => { captured = req; sendHandshake(ws); });
     t.after(() => server.close());
 
-    const client = new MeshCentralClient({ url: server.url + '?key=examplekey', password: 'secret', connectTimeout: 2000, commandTimeout: 2000 });
+    const client = new MeshCentralClient({ url: server.url + '?key=examplekey&auth=examplecookie', password: 'secret', connectTimeout: 2000, commandTimeout: 2000 });
     t.after(() => client.close());
     await client.connect();
 
-    assert.equal(client.controlUrl, server.url + '/control.ashx?key=examplekey');
-    assert.equal(new URL(captured.url, 'ws://localhost').searchParams.get('key'), 'examplekey');
+    assert.equal(client.controlUrl, server.url + '/control.ashx');
+    assert.doesNotMatch(client.controlUrl, /[?&](?:key|auth)=/i);
+    const connectionUrl = new URL(captured.url, 'ws://localhost');
+    assert.equal(connectionUrl.searchParams.get('key'), 'examplekey');
+    assert.equal(connectionUrl.searchParams.get('auth'), 'examplecookie');
+    assert.equal(new URL(client.url, 'ws://localhost').searchParams.get('key'), 'examplekey');
+});
+
+test('connection errors never carry a url login key or auth cookie', { timeout: 10000 }, async () => {
+    const probe = await createServer(() => { });
+    const port = probe.port;
+    await probe.close();
+
+    const client = new MeshCentralClient({
+        url: 'ws://127.0.0.1:' + port + '?key=SECRETLOGINKEY&auth=SECRETCOOKIE',
+        password: 'secret',
+        connectTimeout: 2000
+    });
+    await assert.rejects(client.connect(), (err) => {
+        assert.ok(err instanceof ConnectionError);
+        assert.match(err.message, /Unable to connect to ws:\/\/127\.0\.0\.1:/);
+        assert.doesNotMatch(err.message, /SECRETLOGINKEY|SECRETCOOKIE/);
+        assert.doesNotMatch(err.message, /[?&](?:key|auth)=/i);
+        return true;
+    });
+    assert.equal(client.controlUrl, 'ws://127.0.0.1:' + port + '/control.ashx');
 });
 
 test('a standalone script can connect, run a command and close with no CLI output', { timeout: 10000 }, async (t) => {

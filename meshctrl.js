@@ -1328,7 +1328,7 @@ function performConfigOperations(args) {
 function onVerifyServer(clientName, certs) { return null; }
 
 function serverConnect() {
-    const { MeshCentralClient } = require('./meshcentral-client');
+    const { MeshCentralClient, redactCredentials } = require('./meshcentral-client');
 
     // The client owns the connection, authentication in all its modes, the
     // handshake and the startup discovery of server info, rights and version.
@@ -1345,8 +1345,10 @@ function serverConnect() {
             proxy: args.proxy,
             checkServerIdentity: onVerifyServer
         });
-    } catch (ex) { console.log(ex.message); process.exit(); return; }
-    settings.xxurl = client.controlUrl;
+    } catch (ex) { console.log(redactCredentials(ex.message)); process.exit(); return; }
+    // The effective url carries the login key agent downloads may need; the
+    // redacted control url is what errors and logs use.
+    settings.xxurl = client.url;
     const RUNCOMMAND_RESPONSE_ID = client.newResponseId();
 
     client.connect().then(function open() {
@@ -1814,7 +1816,7 @@ function serverConnect() {
                         });
                     }
                 })
-                req.on('error', function (error) { console.error(error); process.exit(1); })
+                req.on('error', function (error) { console.error(redactCredentials(((error != null) && (error.message != null)) ? error.message : String(error))); process.exit(1); })
                 req.end()
                 break;
             }
@@ -2029,8 +2031,9 @@ function serverConnect() {
 
     client.on('close', function () { process.exit(); });
     client.on('error', function (err) {
-        // The client maps transport errors to actionable messages.
-        console.log(err.message);
+        // The client maps transport errors to actionable messages and keeps
+        // credentials out of them.
+        console.log(redactCredentials(err.message));
         process.exit();
     });
 
@@ -2771,6 +2774,7 @@ function getDevicesThatMatchFilter(nodes, x) {
 
 // Connect tunnel to a remote agent
 function connectTunnel(url) {
+    const { redactCredentials } = require('./meshcentral-client');
     // Setup WebSocket options
     var options = { rejectUnauthorized: false, checkServerIdentity: onVerifyServer }
 
@@ -2784,7 +2788,7 @@ function connectTunnel(url) {
     settings.tunnelws = new WebSocket(url, options);
     settings.tunnelws.on('open', function () { console.log('Waiting for Agent...'); }); // Wait for agent connection
     settings.tunnelws.on('close', function () { console.log('Connection Closed.'); process.exit(); });
-    settings.tunnelws.on('error', function (err) { console.log(err); process.exit(); });
+    settings.tunnelws.on('error', function (err) { console.log(redactCredentials(((err != null) && (err.message != null)) ? err.message : String(err))); process.exit(); });
 
     if (settings.cmd == 'shell') {
         // This code does all of the work for a shell command

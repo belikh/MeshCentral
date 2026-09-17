@@ -90,6 +90,32 @@ function connectionErrorMessage(err, controlUrl) {
     return 'Unable to connect to ' + controlUrl;
 }
 
+// Strip credential query parameters from a url so it can be logged, shown in
+// an error or audited. Other query parameters are kept.
+function redactControlUrl(url) {
+    const text = '' + url;
+    try {
+        const parsed = new URL(text);
+        let redacted = false;
+        for (const name of ['key', 'auth']) {
+            if (parsed.searchParams.has(name)) { parsed.searchParams.delete(name); redacted = true; }
+        }
+        return redacted ? parsed.toString() : text;
+    } catch (ex) {
+        return text.replace(/([?&])(?:key|auth)=[^&\s"'#]*/gi, '').replace(/[?&]$/, '');
+    }
+}
+
+const CREDENTIAL_QUERY = /([?&](?:key|auth|token|password)=)[^&\s"']*/gi;
+
+// Remove credential values from any text bound for output. The client's own
+// errors already use the redacted control url; this is the belt-and-braces
+// helper for callers that print raw transport errors.
+function redactCredentials(text) {
+    if (typeof text !== 'string') { return String(text); }
+    return text.replace(CREDENTIAL_QUERY, '$1[redacted]');
+}
+
 // Complete a bare device id into a full 'node/<domain>/<id>' mesh nodeid. The
 // control protocol completes bare ids with the connection's domain, and the
 // desktop multiplexor requires the full nodeid in the viewer url.
@@ -156,7 +182,6 @@ function resolveAuth(config) {
         url += 'control.ashx';
         if (loginKey != null) { url += '?key=' + loginKey; }
     }
-    const controlUrl = url;
 
     let rawKey = null;
     if (config.loginKey != null) {
@@ -202,7 +227,7 @@ function resolveAuth(config) {
         headers['x-meshauth'] = Buffer.from(username).toString('base64') + ',' + Buffer.from('' + config.password).toString('base64') + token;
     }
 
-    return { controlUrl: controlUrl, url: url, usingLoginKey: usingLoginKey, headers: headers };
+    return { controlUrl: redactControlUrl(url), url: url, usingLoginKey: usingLoginKey, headers: headers };
 }
 
 /**
@@ -238,7 +263,7 @@ class MeshCentralClient extends EventEmitter {
         this.connectTimeout = (config.connectTimeout != null) ? config.connectTimeout : DEFAULT_CONNECT_TIMEOUT;
 
         const auth = resolveAuth(config);
-        this.controlUrl = auth.controlUrl; // Sanitised control endpoint, safe to log
+        this.controlUrl = auth.controlUrl; // Redacted control endpoint, safe to log
         this.url = auth.url; // Effective websocket url, may contain credentials
         this._usingLoginKey = auth.usingLoginKey;
 
@@ -541,7 +566,9 @@ class MeshCentralClient extends EventEmitter {
     */
     downloadAgent(options) {
         options = options || {};
-        const url = agentDownloadUrl(this.controlUrl, options);
+        // The download may need the login key, so it uses the effective url;
+        // this.controlUrl stays the redacted one for logs and errors.
+        const url = agentDownloadUrl(this.url, options);
         const directory = (options.directory != null) ? options.directory : process.cwd();
         const timeout = (options.timeout != null) ? options.timeout : this.commandTimeout;
         const requestFn = (typeof options.request === 'function') ? options.request : https.request;
@@ -795,5 +822,6 @@ module.exports = {
     TimeoutError: TimeoutError,
     RelayError: RelayError,
     desktopRelayUrl: desktopRelayUrl,
-    agentDownloadUrl: agentDownloadUrl
+    agentDownloadUrl: agentDownloadUrl,
+    redactCredentials: redactCredentials
 };

@@ -86,6 +86,23 @@ test('agentDownloadUrl builds the meshagents url meshctrl downloads from', () =>
     );
 });
 
+test('downloadAgent keeps a url login key on the download request', async (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-download-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const stub = createHttpsStub({
+        statusCode: 200,
+        headers: { 'content-disposition': 'attachment; filename="meshagent-test.bin"' },
+        chunks: [Buffer.from('x')]
+    });
+
+    const client = new MeshCentralClient({ url: 'wss://mc.example.test?key=SECRETLOGINKEY', commandTimeout: 2000 });
+    await client.downloadAgent({ type: 3, meshid: 'mesh//abc', directory: dir, request: stub.request });
+
+    assert.equal(stub.calls[0].url, 'https://mc.example.test/meshagents?key=SECRETLOGINKEY&id=3&meshid=mesh//abc');
+    assert.equal(client.controlUrl, 'wss://mc.example.test/control.ashx');
+    assert.doesNotMatch(client.controlUrl, /[?&](?:key|auth)=/i);
+});
+
 test('a request can match its response by action when the server sends no responseid', { timeout: 10000 }, async (t) => {
     const server = await createServer((ws) => {
         sendHandshake(ws);
