@@ -52,6 +52,7 @@ const {
     scaleCoordinates
 } = require('./desktopcapture.js');
 const { createDesktopSessionCache } = require('./desktop-session-cache.js');
+const { startSessionCapture, releaseSession } = require('./desktop-capture-session.js');
 const { imageResult, textResult } = require('./mcp-tool-registry.js');
 
 const IMAGE_TYPE_NAMES = ['jpeg', 'png', 'tiff', 'webp'];
@@ -128,17 +129,16 @@ function sessionOptionsFrom(args, defaults) {
 async function desktopSnapshot(client, args, createCapture, defaults) {
     const session = await client.launchDesktopSession(args.deviceid, sessionOptionsFrom(args, defaults));
     try {
-        const capture = session.attach(createCapture(session.captureConfig));
         let frame = null;
         try {
-            await capture.start();
+            const capture = await startSessionCapture(session, createCapture);
             frame = await capture.waitForFrame({ latest: true });
         } catch (error) {
             throw surfaceCaptureError(error);
         }
         return imageResult(frame.data, frame.mimeType, formatFrameMetadata(frame));
     } finally {
-        try { await session.release(); } catch (error) { }
+        await releaseSession(session);
     }
 }
 
@@ -505,9 +505,8 @@ async function desktopInput(client, args, createCapture, options, defaults) {
             // Launch failures (rights, consent, authentication) keep their own
             // message; only viewer errors borrow the server's words.
             session = await client.launchDesktopSession(args.deviceid, sessionOptionsFrom(args, defaults));
-            capture = session.attach(createCapture(session.captureConfig));
             try {
-                await capture.start();
+                capture = await startSessionCapture(session, createCapture);
             } catch (error) {
                 throw surfaceCaptureError(error);
             }
@@ -529,7 +528,7 @@ async function desktopInput(client, args, createCapture, options, defaults) {
         throw error;
     } finally {
         if ((cache != null) && (entry != null)) { cache.finish(entry); }
-        if (session != null) { try { await session.release(); } catch (error) { } }
+        if (session != null) { await releaseSession(session); }
     }
 }
 

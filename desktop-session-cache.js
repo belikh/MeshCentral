@@ -26,26 +26,12 @@
 */
 
 const { DesktopCapture } = require('./desktopcapture.js');
+const { startSessionCapture, releaseSession } = require('./desktop-capture-session.js');
 
 const DEFAULT_IDLE_TIMEOUT = 30000;
 
 function isCaptureClosed(capture) {
     return (capture != null) && (capture.state === 'closed');
-}
-
-function settle(promise) {
-    if (promise == null) { return Promise.resolve(); }
-    return Promise.resolve(promise).catch(() => { });
-}
-
-// Release a session without ever throwing, synchronously or asynchronously:
-// closing a socket can fail and that must not break eviction.
-function releaseSession(session) {
-    try {
-        return settle(session.release());
-    } catch (error) {
-        return Promise.resolve();
-    }
 }
 
 class DesktopSessionCache {
@@ -175,8 +161,7 @@ class DesktopSessionCache {
         }
         let capture = null;
         try {
-            capture = session.attach(this._createCapture(session.captureConfig));
-            await capture.start();
+            capture = await startSessionCapture(session, this._createCapture);
         } catch (error) {
             await releaseSession(session);
             throw error;
