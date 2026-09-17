@@ -9,6 +9,14 @@ const {
   encodeCompressionLevel,
   encodePause,
   encodeRefresh,
+  encodeMouseMove,
+  encodeMouseButton,
+  encodeMouseScroll,
+  encodeKey,
+  encodeKeyUnicode,
+  encodeText,
+  keycodeFromName,
+  scaleCoordinates,
   decodeCommand,
   parseMessage,
   detectImageFormat,
@@ -269,4 +277,156 @@ test('codec: truncated images yield no dimensions instead of throwing', () => {
   assert.equal(readImageDimensions(TINY_JPEG.subarray(0, 3)), null);
   assert.equal(readImageDimensions(PNG.subarray(0, 20)), null);
   assert.equal(readImageDimensions(null), null);
+});
+
+// Input encoding. Every expected buffer below is hand-built from the byte
+// sequences the browser viewer produces in
+// public/scripts/agent-desktop-0.0.2.js (SendMouseMsg, SendKeyMsgKC,
+// SendKeyUnicode and SendStringUnicode), not from this module's own encoders.
+
+test('input codec: mouse move matches the browser mouse command', () => {
+  assert.deepEqual(
+    encodeMouseMove(0x1234, 0x5678),
+    Buffer.from([0x00, 0x02, 0x00, 0x0A, 0x00, 0x00, 0x12, 0x34, 0x56, 0x78])
+  );
+  assert.deepEqual(
+    encodeMouseMove(100, 200),
+    Buffer.from([0x00, 0x02, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x64, 0x00, 0xC8])
+  );
+});
+
+test('input codec: mouse button masks double on release like the browser encoder', () => {
+  const cases = [
+    ['left', 0x02, 0x04],
+    ['right', 0x08, 0x10],
+    ['middle', 0x20, 0x40]
+  ];
+  for (const [button, downMask, upMask] of cases) {
+    assert.deepEqual(
+      encodeMouseButton(button, true, 100, 200),
+      Buffer.from([0x00, 0x02, 0x00, 0x0A, 0x00, downMask, 0x00, 0x64, 0x00, 0xC8]),
+      button + ' press'
+    );
+    assert.deepEqual(
+      encodeMouseButton(button, false, 100, 200),
+      Buffer.from([0x00, 0x02, 0x00, 0x0A, 0x00, upMask, 0x00, 0x64, 0x00, 0xC8]),
+      button + ' release'
+    );
+  }
+});
+
+test('input codec: scroll uses the browser negative-delta encoding, not two\'s complement', () => {
+  assert.deepEqual(
+    encodeMouseScroll(10, 20, 120),
+    Buffer.from([0x00, 0x02, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x0A, 0x00, 0x14, 0x00, 0x78])
+  );
+  assert.deepEqual(
+    encodeMouseScroll(10, 20, -120),
+    Buffer.from([0x00, 0x02, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x0A, 0x00, 0x14, 0xFF, 0x87])
+  );
+  assert.deepEqual(
+    encodeMouseScroll(0, 0, -360),
+    Buffer.from([0x00, 0x02, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0x97])
+  );
+});
+
+test('input codec: key events match the browser scancode command', () => {
+  assert.deepEqual(
+    encodeKey('down', 'KeyA'),
+    Buffer.from([0x00, 0x01, 0x00, 0x06, 0x00, 0x41])
+  );
+  assert.deepEqual(
+    encodeKey('up', 'KeyA'),
+    Buffer.from([0x00, 0x01, 0x00, 0x06, 0x01, 0x41])
+  );
+  assert.deepEqual(
+    encodeKey('down', 'ArrowLeft', true),
+    Buffer.from([0x00, 0x01, 0x00, 0x06, 0x04, 0x25])
+  );
+  assert.deepEqual(
+    encodeKey('up', 'ArrowLeft', true),
+    Buffer.from([0x00, 0x01, 0x00, 0x06, 0x03, 0x25])
+  );
+});
+
+test('input codec: unicode key events match the browser command', () => {
+  assert.deepEqual(
+    encodeKeyUnicode('down', 0x0041),
+    Buffer.from([0x00, 0x55, 0x00, 0x07, 0x00, 0x00, 0x41])
+  );
+  assert.deepEqual(
+    encodeKeyUnicode('up', 0x0041),
+    Buffer.from([0x00, 0x55, 0x00, 0x07, 0x01, 0x00, 0x41])
+  );
+});
+
+test('input codec: text produces a down and an up per character in order', () => {
+  assert.deepEqual(encodeText('Hi'), [
+    Buffer.from([0x00, 0x55, 0x00, 0x07, 0x00, 0x00, 0x48]),
+    Buffer.from([0x00, 0x55, 0x00, 0x07, 0x01, 0x00, 0x48]),
+    Buffer.from([0x00, 0x55, 0x00, 0x07, 0x00, 0x00, 0x69]),
+    Buffer.from([0x00, 0x55, 0x00, 0x07, 0x01, 0x00, 0x69])
+  ]);
+  assert.deepEqual(encodeText(''), []);
+});
+
+test('input codec: key names resolve like the browser convertKeyCode', () => {
+  assert.equal(keycodeFromName('KeyA'), 65);
+  assert.equal(keycodeFromName('KeyZ'), 90);
+  assert.equal(keycodeFromName('Digit0'), 48);
+  assert.equal(keycodeFromName('Digit9'), 57);
+  assert.equal(keycodeFromName('Numpad0'), 96);
+  assert.equal(keycodeFromName('Numpad5'), 101);
+  assert.equal(keycodeFromName('Numpad9'), 105);
+  assert.equal(keycodeFromName('Space'), 32);
+  assert.equal(keycodeFromName('Quote'), 222);
+  assert.equal(keycodeFromName('Semicolon'), 186);
+  assert.equal(keycodeFromName('NumpadMultiply'), 106);
+  assert.equal(keycodeFromName('NumpadEnter'), 13);
+  assert.equal(keycodeFromName('ArrowLeft'), 37);
+  assert.equal(keycodeFromName('F12'), 123);
+  assert.equal(keycodeFromName('ControlLeft'), 17);
+  assert.equal(keycodeFromName('AltRight'), 18);
+  assert.equal(keycodeFromName('MetaRight'), 92);
+  assert.equal(keycodeFromName('VolumeMute'), 181);
+  assert.equal(keycodeFromName('Bogus'), null);
+  assert.equal(keycodeFromName('KeyAB'), null);
+  assert.equal(keycodeFromName('keya'), null);
+  assert.equal(keycodeFromName(''), null);
+  assert.equal(keycodeFromName(null), null);
+});
+
+test('input codec: invalid input values are rejected', () => {
+  assert.throws(() => encodeMouseMove(-1, 0), TypeError);
+  assert.throws(() => encodeMouseMove(65536, 0), TypeError);
+  assert.throws(() => encodeMouseMove(1.5, 0), TypeError);
+  assert.throws(() => encodeMouseButton('bogus', true, 0, 0), TypeError);
+  assert.throws(() => encodeMouseButton('left', 'yes', 0, 0), TypeError);
+  assert.throws(() => encodeMouseScroll(0, 0, 32768), TypeError);
+  assert.throws(() => encodeMouseScroll(0, 0, 1.5), TypeError);
+  assert.throws(() => encodeKey('sideways', 'KeyA'), TypeError);
+  assert.throws(() => encodeKey('down', 'Bogus'), TypeError);
+  assert.throws(() => encodeKeyUnicode('down', 0x10000), TypeError);
+  assert.throws(() => encodeText(5), TypeError);
+});
+
+test('input codec: frame coordinates scale onto the remote screen', () => {
+  const frame = { x: 0, y: 0, width: 1024, height: 768, screen: { width: 1920, height: 1080 } };
+  assert.deepEqual(scaleCoordinates(512, 384, frame), { x: 960, y: 540 });
+  assert.deepEqual(scaleCoordinates(0, 0, frame), { x: 0, y: 0 });
+  assert.deepEqual(scaleCoordinates(1023, 767, frame), { x: 1918, y: 1079 });
+  assert.deepEqual(scaleCoordinates(1024, 768, frame), { x: 1919, y: 1079 });
+});
+
+test('input codec: a tile origin inside the frame shifts the scaled point', () => {
+  const frame = { x: 0, y: 270, width: 1024, height: 540, screen: { width: 1920, height: 1080 } };
+  assert.deepEqual(scaleCoordinates(10, 10, frame), { x: 19, y: 560 });
+});
+
+test('input codec: coordinates pass through when the frame has no screen metadata', () => {
+  assert.deepEqual(scaleCoordinates(10, 20, null), { x: 10, y: 20 });
+  assert.deepEqual(scaleCoordinates(10.4, 20.5, null), { x: 10, y: 21 });
+  assert.deepEqual(scaleCoordinates(70000, -5, null), { x: 65535, y: 0 });
+  assert.deepEqual(scaleCoordinates(10, 20, { width: 1024, height: 768 }), { x: 10, y: 20 });
+  assert.deepEqual(scaleCoordinates(10, 20, { width: 0, height: 0, screen: { width: 1920, height: 1080 } }), { x: 10, y: 20 });
 });

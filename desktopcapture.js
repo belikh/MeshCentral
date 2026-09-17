@@ -51,6 +51,92 @@ const IMAGE_TYPES = { jpeg: 1, png: 2, tiff: 3, webp: 4 };
 const IMAGE_TYPE_FORMATS = { 1: 'jpeg', 2: 'png', 3: 'tiff', 4: 'webp' };
 const MIME_TYPES = { jpeg: 'image/jpeg', png: 'image/png', tiff: 'image/tiff', webp: 'image/webp' };
 
+// Mouse button masks carried in the MOUSE command. The browser viewer sends
+// the mask on press and the mask doubled on release (left 0x02 -> 0x04,
+// right 0x08 -> 0x10, middle 0x20 -> 0x40).
+const MOUSE_BUTTONS = { left: 0x02, right: 0x08, middle: 0x20 };
+
+// Key action values for KEY and KEYUNICODE commands: 1 = down, 2 = up.
+const KEY_ACTIONS = { down: 1, up: 2 };
+
+// DOM event.code to Windows virtual key code, transcribed from the browser
+// viewer's convertKeyCodeTable in public/scripts/agent-desktop-0.0.2.js.
+// The KeyA-KeyZ, Digit0-Digit9 and Numpad0-Numpad9 families are computed by
+// keycodeFromName instead of being listed here.
+const KEYCODE_TABLE = {
+    'Pause': 19,
+    'CapsLock': 20,
+    'Space': 32,
+    'Quote': 222,
+    'Minus': 189,
+    'NumpadMultiply': 106,
+    'NumpadAdd': 107,
+    'PrintScreen': 44,
+    'Comma': 188,
+    'NumpadSubtract': 109,
+    'NumpadDecimal': 110,
+    'Period': 190,
+    'Slash': 191,
+    'NumpadDivide': 111,
+    'Semicolon': 186,
+    'Equal': 187,
+    'OSLeft': 91,
+    'BracketLeft': 219,
+    'OSRight': 91,
+    'Backslash': 220,
+    'BracketRight': 221,
+    'ContextMenu': 93,
+    'Backquote': 192,
+    'NumLock': 144,
+    'ScrollLock': 145,
+    'Backspace': 8,
+    'Tab': 9,
+    'Enter': 13,
+    'NumpadEnter': 13,
+    'Escape': 27,
+    'Delete': 46,
+    'Home': 36,
+    'PageUp': 33,
+    'PageDown': 34,
+    'ArrowLeft': 37,
+    'ArrowUp': 38,
+    'ArrowRight': 39,
+    'ArrowDown': 40,
+    'End': 35,
+    'Insert': 45,
+    'F1': 112,
+    'F2': 113,
+    'F3': 114,
+    'F4': 115,
+    'F5': 116,
+    'F6': 117,
+    'F7': 118,
+    'F8': 119,
+    'F9': 120,
+    'F10': 121,
+    'F11': 122,
+    'F12': 123,
+    'ShiftLeft': 16,
+    'ShiftRight': 16,
+    'ControlLeft': 17,
+    'ControlRight': 17,
+    'AltLeft': 18,
+    'AltRight': 18,
+    'MetaLeft': 91,
+    'MetaRight': 92,
+    'VolumeMute': 181
+};
+
+// Every key name the input helpers accept: the table above plus the generated
+// families, matching what the browser viewer's convertKeyCode understands.
+const KEY_NAMES = (() => {
+    const names = Object.keys(KEYCODE_TABLE);
+    for (let i = 0; i < 26; i++) { names.push('Key' + String.fromCharCode(65 + i)); }
+    for (let i = 0; i < 10; i++) { names.push('Digit' + String.fromCharCode(48 + i)); }
+    for (let i = 0; i < 10; i++) { names.push('Numpad' + String.fromCharCode(48 + i)); }
+    return Object.freeze(names);
+})();
+
 const DEFAULT_TIMEOUT = 30000;
 const DEFAULT_ENCODING = { imageType: 1, compression: 50, scaling: 1024, frameRate: 100 };
 
@@ -148,6 +234,143 @@ function encodeSetDisplay(display) {
 
 function encodeRemoteInputLock(code) {
     return encodeCommand(COMMANDS.INPUT_LOCK, Buffer.from([code & 0xFF]));
+}
+
+// Resolve a browser event.code name (KeyA, Digit1, Numpad5, Enter, ArrowLeft,
+// ControlLeft and so on) to the Windows virtual key code the agent expects.
+// Returns null for a name the browser viewer would not understand either.
+function keycodeFromName(name) {
+    if ((typeof name != 'string') || (name.length == 0)) { return null; }
+    if (name.startsWith('Key') && (name.length == 4)) { return name.charCodeAt(3); }
+    if (name.startsWith('Digit') && (name.length == 6)) { return name.charCodeAt(5); }
+    if (name.startsWith('Numpad') && (name.length == 7)) { return name.charCodeAt(6) + 48; }
+    const keycode = KEYCODE_TABLE[name];
+    return (keycode === undefined) ? null : keycode;
+}
+
+function normalizeCoordinate(value, axis) {
+    const number = Number(value);
+    if (!Number.isInteger(number) || (number < 0) || (number > 0xFFFF)) {
+        throw new TypeError('Desktop input ' + axis + ' coordinate must be an integer between 0 and 65535');
+    }
+    return number;
+}
+
+function normalizeKeycode(value) {
+    const keycode = (typeof value == 'string') ? keycodeFromName(value) : Number(value);
+    if ((keycode == null) || !Number.isInteger(keycode) || (keycode < 0) || (keycode > 0xFF)) {
+        throw new TypeError('Unsupported desktop input key "' + value + '"');
+    }
+    return keycode;
+}
+
+function normalizeKeyAction(action) {
+    const value = (typeof action == 'string') ? KEY_ACTIONS[action] : Number(action);
+    if ((value != KEY_ACTIONS.down) && (value != KEY_ACTIONS.up)) {
+        throw new TypeError('Desktop input key action must be "down" or "up"');
+    }
+    return value;
+}
+
+// Mouse move: command 2, size 10, zero flags, then x and y as 16-bit values.
+function encodeMouseMove(x, y) {
+    const px = normalizeCoordinate(x, 'x'), py = normalizeCoordinate(y, 'y');
+    return encodeCommand(COMMANDS.MOUSE, Buffer.from([0x00, 0x00, (px >> 8) & 0xFF, px & 0xFF, (py >> 8) & 0xFF, py & 0xFF]));
+}
+
+// Mouse button press (down true) or release (down false) at a position. The
+// browser viewer doubles the mask on release, which is the wire convention the
+// agent reads.
+function encodeMouseButton(button, down, x, y) {
+    const mask = (typeof button == 'string') ? MOUSE_BUTTONS[button] : null;
+    if (mask == null) { throw new TypeError('Desktop input mouse button must be "left", "right" or "middle"'); }
+    if (typeof down != 'boolean') { throw new TypeError('Desktop input mouse button state must be a boolean'); }
+    const px = normalizeCoordinate(x, 'x'), py = normalizeCoordinate(y, 'y');
+    const flags = down ? mask : ((mask * 2) & 0xFF);
+    return encodeCommand(COMMANDS.MOUSE, Buffer.from([0x00, flags, (px >> 8) & 0xFF, px & 0xFF, (py >> 8) & 0xFF, py & 0xFF]));
+}
+
+// Mouse wheel scroll at a position, command 2 size 12. The delta is encoded
+// exactly like the browser viewer: negative deltas use 255 minus the magnitude
+// bytes, not a plain two's complement, so a -120 notch is 0xFF87.
+function encodeMouseScroll(x, y, delta) {
+    const px = normalizeCoordinate(x, 'x'), py = normalizeCoordinate(y, 'y');
+    const value = Number(delta);
+    if (!Number.isInteger(value) || (value < -32768) || (value > 32767)) {
+        throw new TypeError('Desktop input scroll delta must be an integer between -32768 and 32767');
+    }
+    let deltaHigh = 0, deltaLow = 0;
+    if (value < 0) {
+        const magnitude = Math.abs(value);
+        deltaHigh = 255 - (magnitude >> 8);
+        deltaLow = 255 - (magnitude & 0xFF);
+    } else {
+        deltaHigh = (value >> 8) & 0xFF;
+        deltaLow = value & 0xFF;
+    }
+    return encodeCommand(COMMANDS.MOUSE, Buffer.from([0x00, 0x00, (px >> 8) & 0xFF, px & 0xFF, (py >> 8) & 0xFF, py & 0xFF, deltaHigh, deltaLow]));
+}
+
+// Keyboard scancode event: command 1, size 6. Without the extended flag a
+// down/up is 0/1; with it the browser viewer sends 4/3.
+function encodeKey(action, keycode, extended) {
+    const normalized = normalizeKeyAction(action);
+    const key = normalizeKeycode(keycode);
+    let state = normalized - 1;
+    if (extended === true) { state = (state == 1) ? 3 : 4; }
+    return encodeCommand(COMMANDS.KEY, Buffer.from([state, key]));
+}
+
+// Unicode keyboard event: command 85, size 7, action byte then the UTF-16
+// code unit.
+function encodeKeyUnicode(action, codepoint) {
+    const normalized = normalizeKeyAction(action);
+    const value = Number(codepoint);
+    if (!Number.isInteger(value) || (value < 0) || (value > 0xFFFF)) {
+        throw new TypeError('Desktop input unicode codepoint must be an integer between 0 and 65535');
+    }
+    return encodeCommand(COMMANDS.KEYUNICODE, Buffer.from([normalized - 1, (value >> 8) & 0xFF, value & 0xFF]));
+}
+
+// Type a string: one down and one up unicode command per UTF-16 code unit,
+// exactly the order the browser viewer produces for keypress plus keyup. Each
+// command must be sent as its own relay message.
+function encodeText(text) {
+    if (typeof text != 'string') { throw new TypeError('Desktop input text must be a string'); }
+    const commands = [];
+    for (let i = 0; i < text.length; i++) {
+        const codepoint = text.charCodeAt(i);
+        commands.push(encodeKeyUnicode(KEY_ACTIONS.down, codepoint));
+        commands.push(encodeKeyUnicode(KEY_ACTIONS.up, codepoint));
+    }
+    return commands;
+}
+
+// Map a point from a frame's image space onto the remote screen using the
+// frame's screen metadata. Frames are what the caller saw (a tile with its own
+// origin and pixel size), while the wire input commands take screen
+// coordinates, so the frame origin is added before scaling and the result is
+// clamped to the screen. Without usable metadata the point is passed through.
+function scaleCoordinates(x, y, frame) {
+    let screenX = Number(x), screenY = Number(y);
+    if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) {
+        throw new TypeError('Desktop input coordinates must be finite numbers');
+    }
+    const screen = (frame != null) ? frame.screen : null;
+    const width = (frame != null) ? Number(frame.width) : NaN;
+    const height = (frame != null) ? Number(frame.height) : NaN;
+    if ((screen != null) && Number.isFinite(Number(screen.width)) && Number.isFinite(Number(screen.height)) &&
+        (Number(screen.width) > 0) && (Number(screen.height) > 0) && (width > 0) && (height > 0)) {
+        const originX = Number.isFinite(Number(frame.x)) ? Number(frame.x) : 0;
+        const originY = Number.isFinite(Number(frame.y)) ? Number(frame.y) : 0;
+        screenX = (originX + screenX) * (Number(screen.width) / width);
+        screenY = (originY + screenY) * (Number(screen.height) / height);
+        return {
+            x: Math.max(0, Math.min(Number(screen.width) - 1, Math.round(screenX))),
+            y: Math.max(0, Math.min(Number(screen.height) - 1, Math.round(screenY)))
+        };
+    }
+    return { x: Math.max(0, Math.min(0xFFFF, Math.round(screenX))), y: Math.max(0, Math.min(0xFFFF, Math.round(screenY))) };
 }
 
 // Decode one relay command. Jumbo packets (command 27, size 8) wrap a larger
@@ -721,6 +944,10 @@ module.exports = {
     IMAGE_TYPES,
     IMAGE_TYPE_FORMATS,
     MIME_TYPES,
+    MOUSE_BUTTONS,
+    KEY_ACTIONS,
+    KEYCODE_TABLE,
+    KEY_NAMES,
     encodeCommand,
     encodeCompressionLevel,
     encodePause,
@@ -728,6 +955,14 @@ module.exports = {
     encodeGetDisplays,
     encodeSetDisplay,
     encodeRemoteInputLock,
+    encodeMouseMove,
+    encodeMouseButton,
+    encodeMouseScroll,
+    encodeKey,
+    encodeKeyUnicode,
+    encodeText,
+    keycodeFromName,
+    scaleCoordinates,
     decodeCommand,
     parseMessage,
     detectImageFormat,
