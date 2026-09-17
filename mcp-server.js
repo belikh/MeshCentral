@@ -23,6 +23,7 @@ const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio
 const { MeshCentralClient, ConfigurationError } = require('./meshcentral-client.js');
 const { createToolRegistry } = require('./mcp-tool-registry.js');
 const { registerMeshTools } = require('./mcp-tools.js');
+const { registerDesktopTools } = require('./mcp-desktop-tools.js');
 const packageJson = require('./package.json');
 
 const SERVER_NAME = 'meshcentral-mcp';
@@ -202,7 +203,10 @@ async function main(argv, env, io) {
         return 1;
     }
 
-    const server = createMcpServer({ client: client });
+    const server = createMcpServer({
+        client: client,
+        registerTools: (registry, context) => registerDesktopTools(registry, { client: context.client })
+    });
     try {
         await server.connect(new StdioServerTransport());
     } catch (error) {

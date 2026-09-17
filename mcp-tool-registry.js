@@ -53,6 +53,15 @@ function errorResult(text) {
     return result;
 }
 
+/** Build an MCP result carrying one base64 image block and optional text. */
+function imageResult(data, mimeType, text) {
+    if ((data == null) || (mimeType == null)) {
+        throw new TypeError('imageResult requires image data and a mime type.');
+    }
+    const image = { type: 'image', data: Buffer.from(data).toString('base64'), mimeType: String(mimeType) };
+    return { content: (text == null) ? [image] : [image, { type: 'text', text: String(text) }] };
+}
+
 function firstText(result) {
     if ((result != null) && Array.isArray(result.content)) {
         for (const block of result.content) {
@@ -208,5 +217,6 @@ module.exports = {
     ToolRegistrationError: ToolRegistrationError,
     createToolRegistry: createToolRegistry,
     textResult: textResult,
-    errorResult: errorResult
+    errorResult: errorResult,
+    imageResult: imageResult
 };
