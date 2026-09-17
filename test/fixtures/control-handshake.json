@@ -1,0 +1,45 @@
+{
+  "serverinfo": {
+    "action": "serverinfo",
+    "serverinfo": {
+      "domain": "",
+      "name": "mc.example.test",
+      "mpsname": "mc.example.test",
+      "mpsport": 4433,
+      "mpspass": "sanitised",
+      "port": 443,
+      "emailcheck": false,
+      "domainauth": false,
+      "serverTime": 1700000000000,
+      "features": 0,
+      "features2": 0,
+      "features3": 0,
+      "languages": ["en"],
+      "tlshash": "00",
+      "agentCertHash": "AA",
+      "https": true,
+      "redirport": 80,
+      "magenturl": "mc://mc.example.test",
+      "domainsuffix": "",
+      "logoutonidlesessiontimeout": true
+    }
+  },
+  "userinfo": {
+    "action": "userinfo",
+    "userinfo": {
+      "_id": "user//admin",
+      "name": "admin",
+      "siteadmin": 4294967295,
+      "links": {}
+    }
+  },
+  "serverversion": {
+    "action": "serverversion",
+    "result": "OK",
+    "tags": {
+      "current": "1.2.5",
+      "latest": "1.2.5",
+      "stable": "1.2.5"
+    }
+  }
+}

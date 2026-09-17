@@ -1,0 +1,24 @@
+{
+  "action": "nodes",
+  "result": "ok",
+  "nodes": {
+    "mesh//MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEx": [
+      {
+        "_id": "node//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "name": "host-alpha",
+        "icon": 0,
+        "conn": 1,
+        "pwr": 1
+      }
+    ],
+    "mesh//MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIy": [
+      {
+        "_id": "node//BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "name": "host-beta",
+        "icon": 0,
+        "conn": 0,
+        "pwr": 0
+      }
+    ]
+  }
+}
