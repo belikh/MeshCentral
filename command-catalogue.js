@@ -89,6 +89,19 @@ function shortId(id) {
     return (parts.length > 2) ? parts[2] : String(id);
 }
 
+/** True when an identifier names the requested id, whole or short. */
+function matchesId(id, candidate) {
+    return (candidate === id) || (shortId(candidate) === id);
+}
+
+/** The first record whose identifier names id, whole or short, or null. */
+function findById(records, id) {
+    for (const record of records) {
+        if (matchesId(id, record._id)) { return record; }
+    }
+    return null;
+}
+
 /** Render one CSV row the way meshctrl does: quote, strip embedded quotes. */
 function csvRow(values) {
     return values.map((value) => (((value == null) || (value === '')) ? '' : ('"' + String(value).split('"').join('') + '"'))).join(',');
@@ -154,10 +167,7 @@ function meshRightsNames(rights) {
 function formatDeviceGroups(response, args) {
     const meshes = Array.isArray(response.meshes) ? response.meshes : [];
     if (args.idexists != null) {
-        for (const mesh of meshes) {
-            if ((mesh._id === args.idexists) || (shortId(mesh._id) === args.idexists)) { return '1'; }
-        }
-        return '0';
+        return (findById(meshes, args.idexists) != null) ? '1' : '0';
     }
     if (args.nameexists != null) {
         for (const mesh of meshes) {
@@ -220,10 +230,7 @@ function formatUsers(response, args) {
         });
     }
     if (args.idexists != null) {
-        for (const user of users) {
-            if ((user._id === args.idexists) || (shortId(user._id) === args.idexists)) { return '1'; }
-        }
-        return '0';
+        return (findById(users, args.idexists) != null) ? '1' : '0';
     }
     if (args.nameexists != null) {
         for (const user of users) {
@@ -255,10 +262,7 @@ function formatUserGroups(response) {
 
 function formatDeviceGroupUsers(response, args) {
     const meshes = Array.isArray(response.meshes) ? response.meshes : [];
-    let mesh = null;
-    for (const candidate of meshes) {
-        if ((candidate._id === args.id) || (shortId(candidate._id) === args.id)) { mesh = candidate; break; }
-    }
+    const mesh = findById(meshes, args.id);
     if (mesh == null) { return 'Group id not found'; }
     const links = (mesh.links != null) ? mesh.links : {};
     const ids = Object.keys(links);
@@ -362,51 +366,56 @@ function siteAdminRights(args) {
     return siteadmin;
 }
 
+// The per-device rights bits the addusertodevice flags set. The device group
+// ladder shares this run and adds its own administration bits, so the two
+// commands cannot drift apart.
+const DEVICE_RIGHTS_FLAGS = [
+    ['remotecontrol', 8],
+    ['agentconsole', 16],
+    ['serverfiles', 32],
+    ['wakedevices', 64],
+    ['notes', 128],
+    ['desktopviewonly', 256],
+    ['noterminal', 512],
+    ['nofiles', 1024],
+    ['noamt', 2048],
+    ['limiteddesktop', 4096],
+    ['limitedevents', 8192],
+    ['chatnotify', 16384],
+    ['uninstall', 32768],
+    ['noregistry', 4194304],
+    ['nosoftware', 8388608]
+];
+
+// The device group administration bits only addusertodevicegroup sets.
+const DEVICE_GROUP_RIGHTS_FLAGS = [
+    ['editgroup', 1],
+    ['manageusers', 2],
+    ['managedevices', 4]
+];
+
+// The standard remote device rights addusertodevice --fullrights grants.
+const DEVICE_FULL_RIGHTS = (8 + 16 + 32 + 64 + 128 + 16384 + 32768);
+
+/** Sum the bits of the selected flags. */
+function rightsFromFlags(args, flags) {
+    let rights = 0;
+    for (const flag of flags) {
+        if (args[flag[0]]) { rights |= flag[1]; }
+    }
+    return rights;
+}
+
 /** Device group permissions from the meshctrl addusertodevicegroup flags. */
 function deviceGroupRights(args) {
-    var rights = 0;
-    if (args.fullrights) { rights = 0xFFFFFFFF; }
-    if (args.editgroup) { rights |= 1; }
-    if (args.manageusers) { rights |= 2; }
-    if (args.managedevices) { rights |= 4; }
-    if (args.remotecontrol) { rights |= 8; }
-    if (args.agentconsole) { rights |= 16; }
-    if (args.serverfiles) { rights |= 32; }
-    if (args.wakedevices) { rights |= 64; }
-    if (args.notes) { rights |= 128; }
-    if (args.desktopviewonly) { rights |= 256; }
-    if (args.noterminal) { rights |= 512; }
-    if (args.nofiles) { rights |= 1024; }
-    if (args.noamt) { rights |= 2048; }
-    if (args.limiteddesktop) { rights |= 4096; }
-    if (args.limitedevents) { rights |= 8192; }
-    if (args.chatnotify) { rights |= 16384; }
-    if (args.uninstall) { rights |= 32768; }
-    if (args.noregistry) { rights |= 4194304; }
-    if (args.nosoftware) { rights |= 8388608; }
-    return rights;
+    if (args.fullrights) { return 0xFFFFFFFF; }
+    return rightsFromFlags(args, DEVICE_GROUP_RIGHTS_FLAGS) | rightsFromFlags(args, DEVICE_RIGHTS_FLAGS);
 }
 
 /** Device permissions from the meshctrl addusertodevice flags. */
 function deviceRights(args) {
-    var rights = 0;
-    if (args.fullrights) { rights = (8 + 16 + 32 + 64 + 128 + 16384 + 32768); }
-    if (args.remotecontrol) { rights |= 8; }
-    if (args.agentconsole) { rights |= 16; }
-    if (args.serverfiles) { rights |= 32; }
-    if (args.wakedevices) { rights |= 64; }
-    if (args.notes) { rights |= 128; }
-    if (args.desktopviewonly) { rights |= 256; }
-    if (args.noterminal) { rights |= 512; }
-    if (args.nofiles) { rights |= 1024; }
-    if (args.noamt) { rights |= 2048; }
-    if (args.limiteddesktop) { rights |= 4096; }
-    if (args.limitedevents) { rights |= 8192; }
-    if (args.chatnotify) { rights |= 16384; }
-    if (args.uninstall) { rights |= 32768; }
-    if (args.noregistry) { rights |= 4194304; }
-    if (args.nosoftware) { rights |= 8388608; }
-    return rights;
+    if (args.fullrights) { return DEVICE_FULL_RIGHTS; }
+    return rightsFromFlags(args, DEVICE_RIGHTS_FLAGS);
 }
 
 /** Generate an Intel AMT compliant random password, as meshctrl --randompass. */
@@ -3122,9 +3131,5 @@ module.exports = {
     commands: commands,
     commandNames: commandNames,
     byName: byName,
-    mcpCommands: mcpCommands,
-    escapeField: escapeField,
-    shortId: shortId,
-    flattenNodes: flattenNodes,
-    formatDeviceList: formatDeviceList
+    mcpCommands: mcpCommands
 };

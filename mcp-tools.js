@@ -80,7 +80,5 @@ function registerMeshTools(registry, options) {
 module.exports = {
     registerMeshTools: registerMeshTools,
     executeProtocol: executeProtocol,
-    inputSchemaFor: inputSchemaFor,
-    flattenNodes: catalogue.flattenNodes,
-    formatDeviceList: catalogue.formatDeviceList
+    inputSchemaFor: inputSchemaFor
 };
