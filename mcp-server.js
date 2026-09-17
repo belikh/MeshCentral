@@ -20,15 +20,18 @@ const minimist = require('minimist');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 
-const { MeshCentralClient, ConfigurationError } = require('./meshcentral-client.js');
+const {
+    MeshCentralClient,
+    ConfigurationError,
+    DEFAULT_COMMAND_TIMEOUT,
+    DEFAULT_CONNECT_TIMEOUT
+} = require('./meshcentral-client.js');
 const { createToolRegistry } = require('./mcp-tool-registry.js');
 const { registerMeshTools } = require('./mcp-tools.js');
 const { registerDesktopTools } = require('./mcp-desktop-tools.js');
 const { BRIDGE_VERSION, TOOL_SCHEMA_VERSION } = require('./mcp-version.js');
 
 const SERVER_NAME = 'meshcentral-mcp';
-const DEFAULT_COMMAND_TIMEOUT = 30000;
-const DEFAULT_CONNECT_TIMEOUT = 30000;
 const DEFAULT_IMAGE_TYPE = 'jpeg';
 const IMAGE_TYPE_NAMES = ['jpeg', 'png', 'tiff', 'webp'];
 const MIN_QUALITY = 0;

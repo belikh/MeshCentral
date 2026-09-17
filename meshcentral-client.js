@@ -90,6 +90,49 @@ function connectionErrorMessage(err, controlUrl) {
     return 'Unable to connect to ' + controlUrl;
 }
 
+// Shared shape of requestByAction and authCookie: some server replies quote no
+// responseid, so they are matched on their action instead. This owns the
+// timeout, the closed-connection rejection, the listener cleanup and the
+// single settle; accepts(data) picks the reply and value(data) shapes the
+// resolved value. Rejects with TimeoutError, ConnectionError or AuthError.
+function waitForActionResponse(client, options) {
+    const action = options.action;
+    const timeout = options.timeout;
+    return new Promise((resolve, reject) => {
+        let timer = null, finished = false;
+        const cleanup = () => {
+            client.removeListener('message', onMessage);
+            client.removeListener('close', onClose);
+            if (timer != null) { clearTimeout(timer); }
+        };
+        const settle = (error, value) => {
+            if (finished) { return; }
+            finished = true;
+            cleanup();
+            if (error != null) { reject(error); } else { resolve(value); }
+        };
+        const onMessage = (raw) => {
+            let data = null;
+            try { data = JSON.parse(raw.toString()); } catch (ex) { return; }
+            if ((data != null) && options.accepts(data)) { settle(null, options.value(data)); }
+        };
+        const onClose = () => { settle(new ConnectionError(options.closeMessage, 'ECLOSED')); };
+        if (timeout > 0) {
+            timer = setTimeout(() => {
+                settle(new TimeoutError('Command "' + action + '" timed out after ' + timeout + 'ms.', 'ETIMEDOUT', action, timeout));
+            }, timeout);
+            if (timer.unref) { timer.unref(); }
+        }
+        client.on('message', onMessage);
+        client.once('close', onClose);
+        try {
+            client.send(options.message());
+        } catch (ex) {
+            settle(ex);
+        }
+    });
+}
+
 // Strip credential query parameters from a url so it can be logged, shown in
 // an error or audited. Other query parameters are kept.
 function redactControlUrl(url) {
@@ -191,7 +234,7 @@ function resolveAuth(config) {
         // Load key from hex file
         let contents = null;
         try {
-            contents = require('fs').readFileSync(config.loginKeyFile, 'utf8');
+            contents = fs.readFileSync(config.loginKeyFile, 'utf8');
         } catch (ex) {
             throw new ConfigurationError(ex.message, 'EKEYFILE');
         }
@@ -499,38 +542,13 @@ class MeshCentralClient extends EventEmitter {
             return Promise.reject(new ConnectionError('Not connected to ' + this.controlUrl + '.', 'ENOTCONNECTED'));
         }
         const timeout = (options.timeout != null) ? options.timeout : this.commandTimeout;
-        return new Promise((resolve, reject) => {
-            let timer = null, finished = false;
-            const cleanup = () => {
-                this.removeListener('message', onMessage);
-                this.removeListener('close', onClose);
-                if (timer != null) { clearTimeout(timer); }
-            };
-            const settle = (error, value) => {
-                if (finished) { return; }
-                finished = true;
-                cleanup();
-                if (error != null) { reject(error); } else { resolve(value); }
-            };
-            const onMessage = (raw) => {
-                let data = null;
-                try { data = JSON.parse(raw.toString()); } catch (ex) { return; }
-                if ((data != null) && (data.action === action)) { settle(null, data); }
-            };
-            const onClose = () => { settle(new ConnectionError('Connection closed while waiting for a response.', 'ECLOSED')); };
-            if (timeout > 0) {
-                timer = setTimeout(() => {
-                    settle(new TimeoutError('Command "' + action + '" timed out after ' + timeout + 'ms.', 'ETIMEDOUT', action, timeout));
-                }, timeout);
-                if (timer.unref) { timer.unref(); }
-            }
-            this.on('message', onMessage);
-            this.once('close', onClose);
-            try {
-                this.send(Object.assign({}, params, { action: action, responseid: this.newResponseId() }));
-            } catch (ex) {
-                settle(ex);
-            }
+        return waitForActionResponse(this, {
+            action: action,
+            timeout: timeout,
+            closeMessage: 'Connection closed while waiting for a response.',
+            accepts: (data) => (data.action === action),
+            value: (data) => data,
+            message: () => Object.assign({}, params, { action: action, responseid: this.newResponseId() })
         });
     }
 
@@ -637,37 +655,13 @@ class MeshCentralClient extends EventEmitter {
         if ((this.ws == null) || !this.transportOpen) {
             return Promise.reject(new ConnectionError('Not connected to ' + this.controlUrl + '.', 'ENOTCONNECTED'));
         }
-        return new Promise((resolve, reject) => {
-            let timer = null, finished = false;
-            const cleanup = () => {
-                this.removeListener('message', onMessage);
-                this.removeListener('close', onClose);
-                if (timer != null) { clearTimeout(timer); }
-            };
-            const settle = (error, value) => {
-                if (finished) { return; }
-                finished = true;
-                cleanup();
-                if (error != null) { reject(error); } else { resolve(value); }
-            };
-            const onMessage = (raw) => {
-                let data = null;
-                try { data = JSON.parse(raw.toString()); } catch (ex) { }
-                if ((data == null) || (data.action !== 'authcookie')) { return; }
-                settle(null, { cookie: data.cookie, rcookie: data.rcookie });
-            };
-            const onClose = () => { settle(new ConnectionError('Connection closed while waiting for authcookie.', 'ECLOSED')); };
-            if (timeout > 0) {
-                timer = setTimeout(() => { settle(new TimeoutError('Command "authcookie" timed out after ' + timeout + 'ms.', 'ETIMEDOUT', 'authcookie', timeout)); }, timeout);
-                if (timer.unref) { timer.unref(); }
-            }
-            this.on('message', onMessage);
-            this.once('close', onClose);
-            try {
-                this.send({ action: 'authcookie' });
-            } catch (ex) {
-                settle(ex);
-            }
+        return waitForActionResponse(this, {
+            action: 'authcookie',
+            timeout: timeout,
+            closeMessage: 'Connection closed while waiting for authcookie.',
+            accepts: (data) => (data.action === 'authcookie'),
+            value: (data) => ({ cookie: data.cookie, rcookie: data.rcookie }),
+            message: () => ({ action: 'authcookie' })
         });
     }
 
@@ -813,6 +807,8 @@ class DesktopRelaySession {
 }
 
 module.exports = {
+    DEFAULT_COMMAND_TIMEOUT: DEFAULT_COMMAND_TIMEOUT,
+    DEFAULT_CONNECT_TIMEOUT: DEFAULT_CONNECT_TIMEOUT,
     MeshCentralClient: MeshCentralClient,
     DesktopRelaySession: DesktopRelaySession,
     MeshCentralError: MeshCentralError,
