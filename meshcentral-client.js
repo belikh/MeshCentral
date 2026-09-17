@@ -58,6 +58,14 @@ class TimeoutError extends MeshCentralError {
     }
 }
 
+/** A desktop relay session could not be launched. */
+class RelayError extends MeshCentralError {
+    constructor(message, code, result) {
+        super(message, code);
+        this.result = (result != null) ? result : null;
+    }
+}
+
 function onVerifyServer(clientName, certs) { return null; }
 
 // Turn a server close message into an actionable error message. The wording
@@ -77,6 +85,35 @@ function authErrorMessage(data, usingLoginKey) {
 function connectionErrorMessage(err, controlUrl) {
     if ((err != null) && (err.code === 'ENOTFOUND')) { return 'Unable to resolve ' + controlUrl; }
     return 'Unable to connect to ' + controlUrl;
+}
+
+// Complete a bare device id into a full 'node/<domain>/<id>' mesh nodeid. The
+// control protocol completes bare ids with the connection's domain, and the
+// desktop multiplexor requires the full nodeid in the viewer url.
+function completeNodeId(nodeid, domain) {
+    if ((typeof nodeid !== 'string') || (nodeid.length === 0)) { throw new ConfigurationError('A node id is required to launch a desktop session.', 'EINVALIDNODEID'); }
+    if (nodeid.indexOf('/') === -1) { return 'node/' + ((domain != null) ? '' + domain : '') + '/' + nodeid; }
+    return nodeid;
+}
+
+// Build the viewer websocket url from the sanitised control url, mirroring
+// the browser viewer: the same host and domain path, meshrelay.ashx instead of
+// control.ashx, browser=1 so the desktop multiplexor classifies this peer as a
+// viewer, p=2 for the desktop protocol, the tunnel id and nodeid, and the
+// login cookie as the auth query parameter.
+function desktopRelayUrl(controlUrl, params) {
+    params = params || {};
+    let url = null;
+    try { url = new URL('' + controlUrl); } catch (ex) { throw new ConfigurationError('Invalid control url: ' + controlUrl, 'EINVALIDURL'); }
+    const directory = url.pathname.substring(0, url.pathname.lastIndexOf('/') + 1);
+    url.pathname = directory + 'meshrelay.ashx';
+    url.search = '';
+    url.searchParams.set('browser', '1');
+    url.searchParams.set('p', '' + ((params.protocol != null) ? params.protocol : 2));
+    url.searchParams.set('nodeid', '' + params.nodeid);
+    url.searchParams.set('id', '' + params.id);
+    if (params.cookie != null) { url.searchParams.set('auth', '' + params.cookie); }
+    return url.toString();
 }
 
 // Encode an object as a cookie using a key using AES-GCM. (key must be 32 bytes or more)
@@ -405,6 +442,120 @@ class MeshCentralClient extends EventEmitter {
         return 'mc-' + process.pid.toString(36) + '-' + (this._nextResponseId++).toString(36) + '-' + crypto.randomBytes(4).toString('hex');
     }
 
+    /**
+    * Ask the server for a relay authentication cookie pair. Resolves with
+    * { cookie, rcookie }: cookie authenticates the viewer websocket through
+    * the ?auth= query parameter (one hour validity), rcookie authorises the
+    * agent side of the relay through the tunnel message's ?rauth= parameter
+    * (four hour validity). The browser and meshctrl request this pair before
+    * every relay session. The reply carries no responseid, so it is matched
+    * on action and an optional timeout.
+    */
+    authCookie(options) {
+        options = options || {};
+        const timeout = (options.timeout != null) ? options.timeout : this.commandTimeout;
+        if ((this.ws == null) || !this.transportOpen) {
+            return Promise.reject(new ConnectionError('Not connected to ' + this.controlUrl + '.', 'ENOTCONNECTED'));
+        }
+        return new Promise((resolve, reject) => {
+            let timer = null, finished = false;
+            const cleanup = () => {
+                this.removeListener('message', onMessage);
+                this.removeListener('close', onClose);
+                if (timer != null) { clearTimeout(timer); }
+            };
+            const settle = (error, value) => {
+                if (finished) { return; }
+                finished = true;
+                cleanup();
+                if (error != null) { reject(error); } else { resolve(value); }
+            };
+            const onMessage = (raw) => {
+                let data = null;
+                try { data = JSON.parse(raw.toString()); } catch (ex) { }
+                if ((data == null) || (data.action !== 'authcookie')) { return; }
+                settle(null, { cookie: data.cookie, rcookie: data.rcookie });
+            };
+            const onClose = () => { settle(new ConnectionError('Connection closed while waiting for authcookie.', 'ECLOSED')); };
+            if (timeout > 0) {
+                timer = setTimeout(() => { settle(new TimeoutError('Command "authcookie" timed out after ' + timeout + 'ms.', 'ETIMEDOUT', 'authcookie', timeout)); }, timeout);
+                if (timer.unref) { timer.unref(); }
+            }
+            this.on('message', onMessage);
+            this.once('close', onClose);
+            try {
+                this.send({ action: 'authcookie' });
+            } catch (ex) {
+                settle(ex);
+            }
+        });
+    }
+
+    /**
+    * Launch a desktop relay session for a node and return everything a
+    * DesktopCapture viewer needs to connect. This mirrors the browser viewer:
+    * obtain relay cookies, ask the server to route a tunnel message to the
+    * agent ({action:'msg', type:'tunnel', usage:2}, value being a server
+    * rooted relay url carrying p=2, nodeid, id and rauth), then connect the
+    * viewer websocket to meshrelay.ashx with browser=1, p=2, the same nodeid
+    * and id and the login cookie as ?auth=.
+    *
+    * Options:
+    *   id         Explicit tunnel id (default: 12 random hex characters).
+    *   auth       Pre-fetched { cookie, rcookie } from authCookie().
+    *   domain     Domain id used to complete a bare device id.
+    *   timeout    Timeout in ms for the auth cookie and tunnel commands.
+    *   imageType, compression, scaling, frameRate, options
+    *              Passed through to session.captureConfig for DesktopCapture.
+    *
+    * Resolves with a DesktopRelaySession. Rejects with RelayError when the
+    * server refuses to route the tunnel, and with TimeoutError,
+    * ConnectionError or AuthError from the underlying control commands.
+    */
+    launchDesktopSession(nodeid, options) {
+        options = options || {};
+        if ((this.ws == null) || !this.transportOpen) {
+            return Promise.reject(new ConnectionError('Not connected to ' + this.controlUrl + '.', 'ENOTCONNECTED'));
+        }
+        let fullNodeId = null;
+        try {
+            fullNodeId = completeNodeId(nodeid, (options.domain != null) ? options.domain : ((this.serverInfo != null) ? this.serverInfo.domain : null));
+        } catch (ex) {
+            return Promise.reject(ex);
+        }
+        const tunnelId = (options.id != null) ? '' + options.id : crypto.randomBytes(6).toString('hex');
+        const timeout = (options.timeout != null) ? options.timeout : this.commandTimeout;
+        const authPromise = (options.auth != null) ? Promise.resolve(options.auth) : this.authCookie({ timeout: timeout });
+        return authPromise.then((auth) => {
+            if ((auth == null) || (typeof auth.cookie !== 'string') || (typeof auth.rcookie !== 'string')) {
+                throw new RelayError('The server did not return usable relay authentication cookies.', 'ENOAUTH');
+            }
+            const value = '*/meshrelay.ashx?p=2&nodeid=' + fullNodeId + '&id=' + tunnelId + '&rauth=' + auth.rcookie;
+            return this.request('msg', { nodeid: fullNodeId, type: 'tunnel', usage: 2, value: value }, { timeout: timeout }).then((response) => {
+                if ((response == null) || (response.result !== 'OK')) {
+                    const result = (response != null) ? response.result : null;
+                    throw new RelayError('Unable to launch a desktop relay session for ' + fullNodeId +
+                        ((result != null) ? ': ' + result : '. The server closed the connection.'), 'ELAUCHFAILED', result);
+                }
+                const captureConfig = { url: desktopRelayUrl(this.controlUrl, { nodeid: fullNodeId, id: tunnelId, cookie: auth.cookie }) };
+                for (const key of ['imageType', 'compression', 'scaling', 'frameRate', 'options']) {
+                    if (options[key] !== undefined) { captureConfig[key] = options[key]; }
+                }
+                return new DesktopRelaySession({
+                    client: this,
+                    nodeid: fullNodeId,
+                    tunnelId: tunnelId,
+                    url: captureConfig.url,
+                    cookie: auth.cookie,
+                    rcookie: auth.rcookie,
+                    usage: 2,
+                    response: response,
+                    captureConfig: captureConfig
+                });
+            });
+        });
+    }
+
     /** Close the connection cleanly, falling back to a terminate after a grace period. */
     close() {
         this._closing = true;
@@ -435,11 +586,60 @@ class MeshCentralClient extends EventEmitter {
     }
 }
 
+/**
+* A launched desktop relay session. Carries the viewer url, the relay cookies
+* and the control response so a DesktopCapture viewer can connect, and a
+* release() that closes the viewer. Closing the viewer websocket is what ends
+* the server-side relay session (there is no control-channel release message),
+* so attach() the DesktopCapture instance and release() will close it.
+*/
+class DesktopRelaySession {
+    constructor(details) {
+        details = details || {};
+        this.client = details.client || null;
+        this.nodeid = details.nodeid || null;
+        this.tunnelId = details.tunnelId || null;
+        this.url = details.url || null;
+        this.cookie = details.cookie || null;
+        this.rcookie = details.rcookie || null;
+        this.usage = details.usage || 2;
+        this.response = details.response || null;
+        this.captureConfig = details.captureConfig || { url: this.url };
+        this.released = false;
+        this.capture = null;
+        this._releasePromise = null;
+    }
+
+    /** Associate the viewer (a DesktopCapture or anything with close()). */
+    attach(capture) {
+        if (this.released) { throw new RelayError('This desktop relay session has been released.', 'ERELEASED'); }
+        this.capture = capture;
+        return capture;
+    }
+
+    /**
+    * Release the session by closing the attached viewer. Idempotent; safe to
+    * call without an attached viewer. Resolves once the viewer has closed.
+    */
+    release() {
+        if (this._releasePromise != null) { return this._releasePromise; }
+        this.released = true;
+        const capture = this.capture;
+        this._releasePromise = ((capture != null) && (typeof capture.close === 'function'))
+            ? Promise.resolve(capture.close())
+            : Promise.resolve();
+        return this._releasePromise;
+    }
+}
+
 module.exports = {
     MeshCentralClient: MeshCentralClient,
+    DesktopRelaySession: DesktopRelaySession,
     MeshCentralError: MeshCentralError,
     ConfigurationError: ConfigurationError,
     ConnectionError: ConnectionError,
     AuthError: AuthError,
-    TimeoutError: TimeoutError
+    TimeoutError: TimeoutError,
+    RelayError: RelayError,
+    desktopRelayUrl: desktopRelayUrl
 };
