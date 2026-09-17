@@ -16,7 +16,7 @@
 const { randomUUID } = require('crypto');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 
-const { createBridgeServer, createAuditLog } = require('./mcp-bridge.js');
+const { createBridgeServer, createAuditLog, errorMessage, redact } = require('./mcp-bridge.js');
 
 const DEFAULT_IDLE_TIMEOUT = 10 * 60 * 1000;
 
@@ -43,6 +43,13 @@ function sendJsonRpcError(res, status, code, message) {
     const body = JSON.stringify({ jsonrpc: '2.0', error: { code: code, message: message }, id: null });
     res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
     res.end(body);
+}
+
+/** Credential-free text for a failed request; the generic message is the fallback. */
+function failureMessage(error) {
+    if (error == null) { return 'Internal error'; }
+    const message = errorMessage(error);
+    return (message.length > 0) ? redact(message) : 'Internal error';
 }
 
 /**
@@ -113,6 +120,12 @@ function createMcpHttpHandler(options) {
             session.transport = transport;
             await session.bridge.mcp.connect(transport);
             await transport.handleRequest(req, res, body);
+            // A non-initialization request is answered with an HTTP error without
+            // throwing: no session id is issued, so release the control connection
+            // rather than leak it with no idle timer.
+            if ((session.id == null) && (session.disposed !== true)) {
+                await dispose(session);
+            }
         } catch (error) {
             await dispose(session);
             throw error;
@@ -134,7 +147,7 @@ function createMcpHttpHandler(options) {
         const sessionId = req.headers['mcp-session-id'];
         if (sessionId != null) {
             const session = sessions.get(sessionId);
-            if (session == null) {
+            if ((session == null) || (session.account == null) || (session.account.userid !== account.userid)) {
                 sendJsonRpcError(res, 404, -32001, 'Session not found');
                 return;
             }
@@ -143,7 +156,7 @@ function createMcpHttpHandler(options) {
                 await session.transport.handleRequest(req, res, await readJsonBody(req));
             } catch (error) {
                 await dispose(session);
-                sendJsonRpcError(res, 500, -32603, 'Internal error');
+                sendJsonRpcError(res, 500, -32603, failureMessage(error));
             }
             return;
         }
