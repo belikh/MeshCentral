@@ -397,9 +397,9 @@ const DEVICE_GROUP_RIGHTS_FLAGS = [
 // The standard remote device rights addusertodevice --fullrights grants.
 const DEVICE_FULL_RIGHTS = (8 + 16 + 32 + 64 + 128 + 16384 + 32768);
 
-/** Sum the bits of the selected flags. */
-function rightsFromFlags(args, flags) {
-    let rights = 0;
+/** OR the selected flag bits onto an initial mask. */
+function rightsFromFlags(args, flags, initial) {
+    let rights = initial;
     for (const flag of flags) {
         if (args[flag[0]]) { rights |= flag[1]; }
     }
@@ -408,14 +408,12 @@ function rightsFromFlags(args, flags) {
 
 /** Device group permissions from the meshctrl addusertodevicegroup flags. */
 function deviceGroupRights(args) {
-    if (args.fullrights) { return 0xFFFFFFFF; }
-    return rightsFromFlags(args, DEVICE_GROUP_RIGHTS_FLAGS) | rightsFromFlags(args, DEVICE_RIGHTS_FLAGS);
+    return rightsFromFlags(args, DEVICE_GROUP_RIGHTS_FLAGS.concat(DEVICE_RIGHTS_FLAGS), args.fullrights ? 0xFFFFFFFF : 0);
 }
 
 /** Device permissions from the meshctrl addusertodevice flags. */
 function deviceRights(args) {
-    if (args.fullrights) { return DEVICE_FULL_RIGHTS; }
-    return rightsFromFlags(args, DEVICE_RIGHTS_FLAGS);
+    return rightsFromFlags(args, DEVICE_RIGHTS_FLAGS, args.fullrights ? DEVICE_FULL_RIGHTS : 0);
 }
 
 /** Generate an Intel AMT compliant random password, as meshctrl --randompass. */
