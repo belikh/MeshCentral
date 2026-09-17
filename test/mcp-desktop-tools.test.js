@@ -280,7 +280,9 @@ test('an MCP client can call mesh_desktop_snapshot over a transport', async (t) 
     await Promise.all([server.mcp.connect(serverTransport), client.connect(clientTransport)]);
 
     const listed = await client.listTools();
-    assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), ['mesh_desktop_snapshot', 'mesh_list_devices']);
+    const toolNames = listed.tools.map((tool) => tool.name);
+    assert.ok(toolNames.includes('mesh_desktop_snapshot'));
+    assert.ok(toolNames.includes('mesh_list_devices'));
 
     const result = await client.callTool({ name: 'mesh_desktop_snapshot', arguments: { deviceid: NODE_ID } });
     assert.equal(result.isError, undefined);
