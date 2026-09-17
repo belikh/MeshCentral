@@ -37,7 +37,17 @@ const TOOL_NAMES = [
     'mesh_server_version',
     'mesh_user_info',
     'mesh_get_device',
-    'mesh_list_user_groups'
+    'mesh_list_user_groups',
+    'mesh_run_command',
+    'mesh_shell',
+    'mesh_device_open_url',
+    'mesh_device_message',
+    'mesh_device_toast',
+    'mesh_device_sharing',
+    'mesh_device_power',
+    'mesh_index_agent_error_log',
+    'mesh_agent_download',
+    'mesh_web_relay'
 ];
 
 function createFakeClient(state) {
