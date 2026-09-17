@@ -5115,11 +5115,16 @@
                 }
                 case 'createLoginToken': { // A new login token was created
                     if (xxdialogMode) return;
-                    var x = "Take note of this username and password, the password cannot be shown again." + '<br /><br />';
+                    var x = "Take note of this username and password, the password cannot be shown again. To rotate this token, create a new token and remove the old one." + '<br /><br />';
                     x += addHtmlValue("Name", EscapeHtml(message.name))
                     if (message.expire != 0) { x += addHtmlValue("Expire", EscapeHtml(printDateTime(new Date(message.expire)))); }
                     x += addHtmlValue("Username", '<i class="fa-regular fa-copy" title="' + "Copy link to clipboard" + '" style="margin:9px;cursor:pointer;float:right" onclick=copyTextToClip2("' + encodeURIComponentEx(message.tokenUser) + '")></i><div class=selecttext style=width:230px;padding:5px;border-radius:5px;font-size:15px>' + EscapeHtml(message.tokenUser) + '</div>');
                     x += addHtmlValue("Password", '<i class="fa-regular fa-copy" title="' + "Copy link to clipboard" + '" style="margin:9px;cursor:pointer;float:right" onclick=copyTextToClip2("' + encodeURIComponentEx(message.tokenPass) + '")></i><div class=selecttext style=width:230px;padding:5px;border-radius:5px;font-size:15px>' + EscapeHtml(message.tokenPass) + '</div>');
+                    if (message.mcpToken != null) {
+                        var mcpConfig = JSON.stringify({ mcp: { meshcentral: { type: 'remote', url: window.location.origin + '/mcp', headers: { Authorization: 'Bearer ' + message.mcpToken }, enabled: true } } }, null, 2);
+                        x += addHtmlValue("Connection token", '<i class="fa-regular fa-copy" title="' + "Copy link to clipboard" + '" style="margin:9px;cursor:pointer;float:right" onclick=copyTextToClip2("' + encodeURIComponentEx(message.mcpToken) + '")></i><div class=selecttext style=width:230px;padding:5px;border-radius:5px;font-size:12px;word-break:break-all>' + EscapeHtml(message.mcpToken) + '</div>');
+                        x += addHtmlValue("MCP configuration", '<i class="fa-regular fa-copy" title="' + "Copy link to clipboard" + '" style="margin:9px;cursor:pointer;float:right" onclick=copyTextToClip2("' + encodeURIComponentEx(mcpConfig) + '")></i><div class=selecttext style=width:230px;padding:5px;border-radius:5px;font-size:11px;white-space:pre;overflow:auto;max-height:180px>' + EscapeHtml(mcpConfig) + '</div>');
+                    }
                     setModalContent('xxAddAgent', "Login Token Created", x);
                     QV('idx_dlgOkButton', false);
                     Q('idx_dlgCancelButton').innerHTML = "Close";
@@ -17211,7 +17216,8 @@
                     if (ltoken.expire != 0) { details = EscapeHtml(format("Expires {0}", printDateTime(new Date(ltoken.expire)))) + ' '; }
                     x += '<tr ' + (((++count % 2) == 0) ? 'style=background-color:#DDD' : '') + '><td style=width:30%><i class="fa-fw fa-solid fa-user"></i>&nbsp;' + EscapeHtml(ltoken.name) + '<div></div></div></td><td style=width:70%><div style=float:right>' + details + trash + '</div><div>' + EscapeHtml(ltoken.tokenUser) + '</div></td></tr>';
                 }
-                x += '</tbody></table></div><br />';
+                x += '</tbody></table></div>';
+                x += '<div style="font-size:x-small;opacity:0.8">' + "Credentials are shown once when a token is created. To rotate a token, create a new one and remove the old one." + '</div><br />';
                 QV('accountCreateLoginTokenSpan', false);
             } else {
                 QV('accountCreateLoginTokenSpan', features2 & 0x00000080);
