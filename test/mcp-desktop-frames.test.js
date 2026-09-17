@@ -462,7 +462,8 @@ test('an MCP client can call mesh_desktop_frames over a transport', async (t) =>
     const server = createMcpServer({
         client: fakes.client,
         audit: { record: (record) => records.push(record) },
-        registerTools: (registry, context) => registerDesktopTools(registry, { client: context.client, createCapture: fakes.factory, cache: cache })
+        createCapture: fakes.factory,
+        cache: cache
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: 'test-client', version: '0.0.0' });

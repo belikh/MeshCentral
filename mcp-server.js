@@ -17,7 +17,6 @@
 */
 
 const minimist = require('minimist');
-const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 
 const {
@@ -26,30 +25,21 @@ const {
     DEFAULT_COMMAND_TIMEOUT,
     DEFAULT_CONNECT_TIMEOUT
 } = require('./meshcentral-client.js');
-const { createToolRegistry } = require('./mcp-tool-registry.js');
-const { registerMeshTools } = require('./mcp-tools.js');
-const { registerDesktopTools } = require('./mcp-desktop-tools.js');
+const {
+    SERVER_NAME,
+    createBridgeServer,
+    createAuditLog,
+    redact,
+    errorMessage
+} = require('./mcp-bridge.js');
 const { BRIDGE_VERSION, TOOL_SCHEMA_VERSION } = require('./mcp-version.js');
 
-const SERVER_NAME = 'meshcentral-mcp';
 const DEFAULT_IMAGE_TYPE = 'jpeg';
 const IMAGE_TYPE_NAMES = ['jpeg', 'png', 'tiff', 'webp'];
 const MIN_QUALITY = 0;
 const MAX_QUALITY = 100;
 const MIN_SCALE = 1;
 const MAX_SCALE = 65535;
-const CREDENTIAL_QUERY = /([?&](?:key|auth|token|password)=)[^&\s"']*/gi;
-
-/** Remove credential values from any text bound for stderr or an audit record. */
-function redact(text) {
-    if (typeof text !== 'string') { return String(text); }
-    return text.replace(CREDENTIAL_QUERY, '$1[redacted]');
-}
-
-function errorMessage(error) {
-    if (error == null) { return 'Unknown error.'; }
-    return (error.message != null) ? String(error.message) : String(error);
-}
 
 function copyString(config, key, flagValue, envValue) {
     const value = (flagValue !== undefined) ? flagValue : envValue;
@@ -131,78 +121,6 @@ function parseConfig(argv, env) {
     return { help: args.help === true, version: args.version === true, config: config };
 }
 
-/**
-* Create the stderr audit sink. Every invocation produces one JSON line with
-* the timestamp, tool, target, outcome, durationMs and denial/error reason.
-* Credential values are redacted before writing.
-*
-* Options: stream (default process.stderr), now (default () => new Date()).
-*/
-function createAuditLog(options) {
-    options = options || {};
-    const stream = options.stream || process.stderr;
-    const now = (typeof options.now === 'function') ? options.now : () => new Date();
-    return {
-        record(entry) {
-            entry = entry || {};
-            const record = {
-                timestamp: now().toISOString(),
-                tool: (entry.tool != null) ? String(entry.tool) : null,
-                target: (entry.target != null) ? redact(String(entry.target)) : null,
-                outcome: (entry.outcome != null) ? String(entry.outcome) : null,
-                durationMs: (entry.duration != null) ? entry.duration : null,
-                reason: (entry.reason != null) ? redact(String(entry.reason)) : null
-            };
-            stream.write(JSON.stringify(record) + '\n');
-        }
-    };
-}
-
-/**
-* Build the MCP server around an injected MeshCentral client.
-*
-* Options:
-*   client        Required. A connected MeshCentralClient or compatible object.
-*   audit         Audit sink with record(entry). Defaults to stderr.
-*   version       Bridge version reported to MCP clients. Defaults to package.json.
-*   now           Clock injected into the registry, for tests.
-*   registerTools Optional function (registry, { client }) registering extra
-*                 tool groups; later tickets add the desktop tools this way.
-*
-* Returns { client, registry, mcp, connect(transport?), close() }.
-*/
-function createMcpServer(options) {
-    options = options || {};
-    const client = options.client;
-    if (client == null) {
-        throw new ConfigurationError('The MCP server requires a MeshCentral client instance.', 'ENOCLIENT');
-    }
-
-    const audit = options.audit || createAuditLog();
-    const registry = createToolRegistry({
-        onInvocation: (record) => audit.record(record),
-        now: options.now
-    });
-    registerMeshTools(registry, { client: client });
-    if (typeof options.registerTools === 'function') { options.registerTools(registry, { client: client }); }
-
-    const mcp = new McpServer(
-        { name: SERVER_NAME, version: options.version || BRIDGE_VERSION },
-        { instructions: SERVER_NAME + ' ' + (options.version || BRIDGE_VERSION) + ' (tool schema ' + TOOL_SCHEMA_VERSION + ')' }
-    );
-    for (const tool of registry.list()) {
-        mcp.registerTool(tool.name, { description: tool.description, inputSchema: tool.inputSchema }, (args) => registry.call(tool.name, args));
-    }
-
-    return {
-        client: client,
-        registry: registry,
-        mcp: mcp,
-        connect: (transport) => mcp.connect(transport || new StdioServerTransport()),
-        close: () => mcp.close()
-    };
-}
-
 /** The version surface: bridge version plus the MCP tool schema version. */
 function versionText() {
     return SERVER_NAME + ' ' + BRIDGE_VERSION + ' (tool schema ' + TOOL_SCHEMA_VERSION + ')';
@@ -255,16 +173,13 @@ async function main(argv, env, io) {
         return 1;
     }
 
-    const server = createMcpServer({
+    const server = createBridgeServer({
         client: client,
-        registerTools: (registry, context) => registerDesktopTools(registry, {
-            client: context.client,
-            defaults: {
-                imageType: options.config.defaultImageType,
-                quality: options.config.defaultQuality,
-                scale: options.config.defaultScale
-            }
-        })
+        defaults: {
+            imageType: options.config.defaultImageType,
+            quality: options.config.defaultQuality,
+            scale: options.config.defaultScale
+        }
     });
     try {
         await server.connect(new StdioServerTransport());
@@ -301,7 +216,8 @@ module.exports = {
     SERVER_NAME: SERVER_NAME,
     parseConfig: parseConfig,
     createAuditLog: createAuditLog,
-    createMcpServer: createMcpServer,
+    createMcpServer: createBridgeServer,
+    createBridgeServer: createBridgeServer,
     versionText: versionText,
     usageText: usageText,
     redact: redact,
