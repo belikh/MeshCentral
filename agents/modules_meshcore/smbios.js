@@ -42,9 +42,9 @@ function SMBiosTables()
         this._native.CreateMethod('GetSystemFirmwareTable');
     }
     if (process.platform == 'linux') {
-        this._canonicalizeData = function _canonicalizeData(data) {
+        this._canonicalizeData = function _canonicalizeData(data, MemoryStreamCtor) {
             var lines = data.toString().split('Header and Data:\x0A');
-            var MemoryStream = require('MemoryStream');
+            var MemoryStream = MemoryStreamCtor || require('MemoryStream');
             var ms = new MemoryStream();
 
             for (var i = 1; i < lines.length; ++i) {
@@ -53,12 +53,24 @@ function SMBiosTables()
                 ms.write(Buffer.from(header, 'hex'));
                 if (tokens.length > 1) {
                     var strings = tokens[1].split('\x0A\x0A')[0].split('\x0A');
-                    var stringsFinal = [];
+                    // Strings are positional: hex-dump lines up to the 00 terminator, then ONE decoded line.
+                    // dmidecode 3.x prints the decoded line unquoted, so a string like "20" or "008689" looks
+                    // like hex and must be skipped by position, or the following structures are corrupted.
+                    var hex = '';
+                    var inHex = true;
                     for (var strx in strings) {
-                        var tmp = strings[strx].trim().replaceAll(' ', '').replaceAll('\x09', '');
-                        if (tmp && tmp[0] !== '"' && /^[0-9a-fA-F]+$/.test(tmp)) { stringsFinal.push(tmp); }
+                        var line = strings[strx].trim();
+                        if (inHex) {
+                            var compact = line.replaceAll(' ', '').replaceAll('\x09', '');
+                            if (compact.length > 0 && /^([0-9a-fA-F]{2} )*[0-9a-fA-F]{2}$/.test(line)) {
+                                hex += compact;
+                                if (compact.slice(-2) == '00') { inHex = false; }
+                                continue;
+                            }
+                        }
+                        inHex = true;
                     }
-                    ms.write(Buffer.from(stringsFinal.join(''), 'hex'));
+                    ms.write(Buffer.from(hex, 'hex'));
                     ms.write(Buffer.from('00', 'hex'));
                 }
                 else {
@@ -279,7 +291,7 @@ function SMBiosTables()
                 retVal.storageRedirection = amt[6] ? true : false;
                 retVal.serialOverLan = amt[7] ? true : false;
                 retVal.kvm = amt[14] ? true : false;
-                if (data[131].peek() && data[131].peek().slice(52, 56).toString() == 'vPro')
+                if (data[131] && data[131].peek() && data[131].peek().slice(52, 56).toString() == 'vPro')
                 {
                     var settings = data[131].peek();
                     if (settings[0] & 0x04) { retVal.TXT = (settings[0] & 0x08) ? true : false; }
@@ -300,7 +312,7 @@ function SMBiosTables()
         }
         if (!retVal.AMT)
         {
-            if (data[131].peek() && data[131].peek().slice(52, 56).toString() == 'vPro')
+            if (data[131] && data[131].peek() && data[131].peek().slice(52, 56).toString() == 'vPro')
             {
                 var settings = data[131].peek();
                 if ((settings[20] & 0x08) == 0x08) { retVal.AMT = true; }

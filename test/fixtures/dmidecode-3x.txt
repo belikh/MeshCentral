@@ -1,0 +1,73 @@
+# dmidecode 3.4
+Getting SMBIOS data from sysfs.
+SMBIOS 3.5.0 present.
+
+Handle 0x0100, DMI type 1, 27 bytes
+System Information
+	Manufacturer: Example Inc.
+	Product Name: Example Board
+	Version: 1.0
+	Serial Number: 008689
+	UUID: 00000000-0000-0000-0000-000000000000
+	Wake-up Type: Power Switch
+	SKU Number: 20
+	Family: 0807
+Header and Data:
+	01 1B 00 01 01 02 03 04 00 00 00 00 00 00 00 00
+	00 00 00 00 00 00 00 00 06 05 06
+Strings:
+	45 78 61 6D 70 6C 65 20 49 6E 63 2E 00
+	Example Inc.
+	45 78 61 6D 70 6C 65 20 42 6F 61 72 64 00
+	Example Board
+	31 2E 30 00
+	1.0
+	30 30 38 36 38 39 00
+	008689
+	32 30 00
+	20
+	30 38 30 37 00
+	0807
+
+Handle 0x2700, DMI type 39, 22 bytes
+Power Supply
+	Location: 20
+	Device Name: 008689
+	Manufacturer: Example PS
+	Serial Number: 0807
+Header and Data:
+	27 16 00 27 01 01 02 03 04 00 00 00 00 00 00 00
+	00 00 00 00 00 00
+Strings:
+	32 30 00
+	20
+	30 30 38 36 38 39 00
+	008689
+	45 78 61 6D 70 6C 65 20 50 53 00
+	Example PS
+	30 38 30 37 00
+	0807
+
+Handle 0x8200, DMI type 130, 34 bytes
+OEM-specific Type
+		String 1: $AMT
+Header and Data:
+	82 22 00 82 24 41 4D 54 01 01 01 01 00 00 00 00
+	00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00
+	00 00
+Strings:
+	24 41 4D 54 00
+	$AMT
+
+Handle 0x8300, DMI type 131, 62 bytes
+OEM-specific Type
+		String 1: vPro
+Header and Data:
+	83 3E 00 83 3C 00 00 00 01 00 02 00 03 00 04 00
+	00 00 00 00 00 00 00 00 08 00 00 00 37 00 08 00
+	0A 00 09 00 00 00 00 00 00 00 00 00 00 00 00 00
+	00 00 00 00 00 00 00 00 76 50 72 6F 00 00
+Strings:
+	76 50 72 6F 00
+	vPro
+
