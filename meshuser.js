@@ -13,6 +13,8 @@
 /*jshint esversion: 6 */
 "use strict";
 
+const commandRights = require('./meshuser-command-rights.js');
+
 // volume & bitlocker statuses
 const encMethod = { 0: '', 1: "AES-128 with diffuser", 2: "AES-256 with diffuser", 3: 'AES-128', 4: 'AES-256', 5: "Hardware encryption", 6: 'XTS-AES-128', 7: 'XTS-AES-256' };
 const driveType = { 0: "Unknown", 1: "No Root Directory", 2: "Removable Disk", 3: "Local Disk", 4: "Network Drive", 5: "Compact Disc", 6: "RAM Disk" };
@@ -286,7 +288,7 @@ module.exports.CreateMeshUser = function (parent, db, ws, req, args, domain, use
                     var mesh = parent.meshes[agent.dbMeshKey];
                     if ((node != null) && (mesh != null) && ((rights & MESHRIGHT_REMOTECONTROL) || (rights & MESHRIGHT_REMOTEVIEWONLY))) { // 8 is remote control permission, 256 is desktop read only
                         if ((requiredRights != null) && ((rights & requiredRights) == 0)) { if (func) { func(false); return; } } // Check Required Rights
-                        if ((requiredNonRights != null) && (rights != MESHRIGHT_ADMIN) && ((rights & requiredNonRights) != 0)) { if (func) { func(false); return; } } // Check Required None Rights
+                        if (commandRights.isDeniedByNonRights(rights, requiredNonRights)) { if (func) { func(false); return; } } // Check Required None Rights
 
                         command.sessionid = ws.sessionId;   // Set the session id, required for responses
                         command.rights = rights;            // Add user rights flags to the message
@@ -328,7 +330,7 @@ module.exports.CreateMeshUser = function (parent, db, ws, req, args, domain, use
                     // Check if we have permission to send a message to that node
                     parent.GetNodeWithRights(domain, user, command.nodeid, function (node, rights, visible) {
                         if ((requiredRights != null) && ((rights & requiredRights) == 0)) { if (func) { func(false); return; } } // Check Required Rights
-                        if ((requiredNonRights != null) && (rights != MESHRIGHT_ADMIN) && ((rights & requiredNonRights) != 0)) { if (func) { func(false); return; } } // Check Required None Rights
+                        if (commandRights.isDeniedByNonRights(rights, requiredNonRights)) { if (func) { func(false); return; } } // Check Required None Rights
 
                         var mesh = parent.meshes[routing.meshid];
                         if ((node != null) && (mesh != null) && ((rights & MESHRIGHT_REMOTECONTROL) || (rights & MESHRIGHT_REMOTEVIEWONLY))) { // 8 is remote control permission
@@ -1021,6 +1023,10 @@ module.exports.CreateMeshUser = function (parent, db, ws, req, args, domain, use
 
                     // Complete the nodeid if needed
                     if (command.nodeid.indexOf('/') == -1) { command.nodeid = 'node/' + domain.id + '/' + command.nodeid; }
+
+                    // Desktop View Only must not act on the device: these command types require the view-only non-right
+                    const viewOnlyNonRights = commandRights.requiredNonRightsForMsg(command.type);
+                    if (viewOnlyNonRights != null) { requiredNonRights = viewOnlyNonRights; }
 
                     // Check if getting / setting clipboard data is allowed
                     if ((command.type == 'getclip') && (domain.clipboardget == false)) { console.log('CG-EXIT'); break; }
