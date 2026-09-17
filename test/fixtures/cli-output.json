@@ -1,0 +1,382 @@
+{
+  "serverinfo": {
+    "code": 0,
+    "stdout": "domain: \nname: mc.example.test\nmpsname: mc.example.test\nmpsport: 4433\nmpspass: sanitised\nport: 443\nemailcheck: false\ndomainauth: false\nserverTime: 1700000000000\nfeatures: 0\nfeatures2: 0\nfeatures3: 0\nlanguages: [ 'en' ]\ntlshash: 00\nagentCertHash: AA\nhttps: true\nredirport: 80\nmagenturl: mc://mc.example.test\ndomainsuffix: \nlogoutonidlesessiontimeout: true\n",
+    "stderr": ""
+  },
+  "serverinfo json": {
+    "code": 0,
+    "stdout": "{\n  \"domain\": \"\",\n  \"name\": \"mc.example.test\",\n  \"mpsname\": \"mc.example.test\",\n  \"mpsport\": 4433,\n  \"mpspass\": \"sanitised\",\n  \"port\": 443,\n  \"emailcheck\": false,\n  \"domainauth\": false,\n  \"serverTime\": 1700000000000,\n  \"features\": 0,\n  \"features2\": 0,\n  \"features3\": 0,\n  \"languages\": [\n    \"en\"\n  ],\n  \"tlshash\": \"00\",\n  \"agentCertHash\": \"AA\",\n  \"https\": true,\n  \"redirport\": 80,\n  \"magenturl\": \"mc://mc.example.test\",\n  \"domainsuffix\": \"\",\n  \"logoutonidlesessiontimeout\": true\n}\n",
+    "stderr": ""
+  },
+  "userinfo": {
+    "code": 0,
+    "stdout": "_id: user//admin\nname: admin\nsiteadmin: 4294967295\nlinks: {}\n",
+    "stderr": ""
+  },
+  "serverversion": {
+    "code": 0,
+    "stdout": "MeshCentral version: 1.2.5 (latest: 1.2.5) (stable: 1.2.5)\n",
+    "stderr": ""
+  },
+  "listusers": {
+    "code": 0,
+    "stdout": "id, name, email\r\n---------------\n\"pilot\", \"pilot\", \"pilot@example.test\"\n\"viewer\", \"viewer\"\n",
+    "stderr": ""
+  },
+  "listusers json": {
+    "code": 0,
+    "stdout": "[\n  {\n    \"_id\": \"user//pilot\",\n    \"name\": \"pilot\",\n    \"email\": \"pilot@example.test\",\n    \"otpsecret\": \"sanitised\"\n  },\n  {\n    \"_id\": \"user//viewer\",\n    \"name\": \"viewer\"\n  }\n]\n",
+    "stderr": ""
+  },
+  "listusers filter": {
+    "code": 0,
+    "stdout": "id, name, email\r\n---------------\n\"pilot\", \"pilot\", \"pilot@example.test\"\n",
+    "stderr": ""
+  },
+  "listusers idexists": {
+    "code": 0,
+    "stdout": "1\n",
+    "stderr": ""
+  },
+  "listusers nameexists": {
+    "code": 0,
+    "stdout": "user//viewer\n",
+    "stderr": ""
+  },
+  "listusersessions": {
+    "code": 0,
+    "stdout": "user//pilot, 2 sessions.\nuser//viewer, 1 session.\n",
+    "stderr": ""
+  },
+  "listusersessions empty": {
+    "code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "listusers nameexists missing": {
+    "code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "listusergroups": {
+    "code": 0,
+    "stdout": "ugrp//operators, operators, Operators\n  Users:\n    user//pilot\n  Device Groups:\n    mesh//MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEx, 8\n  Devices:\n    node//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, 8\n",
+    "stderr": ""
+  },
+  "listusergroups json": {
+    "code": 0,
+    "stdout": "{\n  \"ugrp//operators\": {\n    \"name\": \"operators\",\n    \"desc\": \"Operators\",\n    \"links\": {\n      \"user//pilot\": {\n        \"rights\": 1\n      },\n      \"mesh//MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEx\": {\n        \"rights\": 8\n      },\n      \"node//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\": {\n        \"rights\": 8\n      }\n    }\n  }\n}\n",
+    "stderr": ""
+  },
+  "listdevicegroups": {
+    "code": 0,
+    "stdout": "id, name\r\n---------------\n\"MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEx\", \"Alpha Group\"\n\"MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIy\", \"Bravo Group\"\n",
+    "stderr": ""
+  },
+  "listdevicegroups hex": {
+    "code": 0,
+    "stdout": "id, name\r\n---------------\n\"0x313131313131313131313131313131313131313131313131313131313131313131\", \"Alpha Group\"\n\"0x323232323232323232323232323232323232323232323232323232323232323232\", \"Bravo Group\"\n",
+    "stderr": ""
+  },
+  "listdevicegroups idexists": {
+    "code": 0,
+    "stdout": "0\n",
+    "stderr": ""
+  },
+  "listdevicegroups nameexists missing": {
+    "code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "listusersofdevicegroup": {
+    "code": 0,
+    "stdout": "Group id not found\n",
+    "stderr": ""
+  },
+  "listusersofdevicegroup short": {
+    "code": 0,
+    "stdout": "userid, rights\r\n---------------\npilot, FullAdministrator\nviewer, RemoteViewOnly\n",
+    "stderr": ""
+  },
+  "listusersofdevicegroup json": {
+    "code": 0,
+    "stdout": "Group id not found\n",
+    "stderr": ""
+  },
+  "listevents json": {
+    "code": 0,
+    "stdout": "[\n  {\n    \"time\": 1700000000000,\n    \"etype\": \"node\",\n    \"action\": \"nodeconnect\",\n    \"nodeid\": \"node//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\n    \"userid\": \"user//pilot\",\n    \"msg\": \"Connected\"\n  },\n  {\n    \"time\": 1700000001000,\n    \"etype\": \"user\",\n    \"action\": \"changenode\",\n    \"nodeid\": \"node//BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\",\n    \"userid\": \"user//viewer\",\n    \"msg\": \"Changed\"\n  }\n]\n",
+    "stderr": ""
+  },
+  "listevents raw": {
+    "code": 0,
+    "stdout": "[{\"time\":1700000000000,\"etype\":\"node\",\"action\":\"nodeconnect\",\"nodeid\":\"node//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"userid\":\"user//pilot\",\"msg\":\"Connected\"},{\"time\":1700000001000,\"etype\":\"user\",\"action\":\"changenode\",\"nodeid\":\"node//BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\",\"userid\":\"user//viewer\",\"msg\":\"Changed\"}]\n",
+    "stderr": ""
+  },
+  "logintokens": {
+    "code": 0,
+    "stdout": "Name                        Username                    Expire\n-------------------------------------------------------------------------------------\nci token                    ~t:abcdef                   Unlimited\nshort token                 ~t:ghijkl                   11/14/2023, 10:13:20 PM\n",
+    "stderr": ""
+  },
+  "logintokens add": {
+    "code": 0,
+    "stdout": "New login token created.\nToken name: ci token\nCreated: 11/14/2023, 10:13:20 PM\nExpire: 11/14/2023, 11:13:20 PM\nUsername: ~t:abcdef\nPassword: sanitised-password\n",
+    "stderr": ""
+  },
+  "logintokens json": {
+    "code": 0,
+    "stdout": "[\n  { name: 'ci token', tokenUser: '~t:abcdef', expire: 0 },\n  {\n    name: 'short token',\n    tokenUser: '~t:ghijkl',\n    expire: 1700000000000\n  }\n]\n",
+    "stderr": ""
+  },
+  "logintokens add json": {
+    "code": 0,
+    "stdout": "{\n  action: 'createLoginToken',\n  name: 'ci token',\n  created: 1700000000000,\n  expire: 1700003600000,\n  tokenUser: '~t:abcdef',\n  tokenPass: 'sanitised-password',\n  responseid: 'meshctrl'\n}\n",
+    "stderr": ""
+  },
+  "deviceinfo": {
+    "code": 0,
+    "stdout": "--- General ---\n  Server Name: host-alpha\n--- Operating System ---\n  Version: Windows 11\n  Architecture: x64\n--- Mesh Agent ---\n  Mesh Agent: Windows 64bit service v1234\n  Last agent connection: Connected now\n  Agent status: Connected now\n  Last agent address: 10.0.0.5\n--- Networking ---\n  0:\n    MAC Layer: MAC: 00:11:22:33:44:55\n    IPv4 Layer: IP: 10.0.0.5, Mask: 255.255.255.0, Gateway: 10.0.0.1  \n--- BIOS ---\n  Vendor: Example\n  Version: 1.0\n--- Motherboard ---\n  Vendor: Example\n  Name: Board\n--- TPM ---\n  SpecVersion: 2.0\n  Identifier: EXAMPLE\n  Activated: Yes\n",
+    "stderr": ""
+  },
+  "deviceinfo json": {
+    "code": 0,
+    "stdout": "{\n  \"General\": {\n    \"Server Name\": \"host-alpha\"\n  },\n  \"Operating System\": {\n    \"Version\": \"Windows 11\",\n    \"Architecture\": \"x64\"\n  },\n  \"Mesh Agent\": {\n    \"Mesh Agent\": \"Windows 64bit service v1234\",\n    \"Last agent connection\": \"Connected now\",\n    \"Agent status\": \"Connected now\",\n    \"Last agent address\": \"10.0.0.5\"\n  },\n  \"Networking\": {\n    \"0\": {\n      \"MAC Layer\": \"MAC: 00:11:22:33:44:55\",\n      \"IPv4 Layer\": \"IP: 10.0.0.5, Mask: 255.255.255.0, Gateway: 10.0.0.1  \"\n    }\n  },\n  \"BIOS\": {\n    \"Vendor\": \"Example\",\n    \"Version\": \"1.0\"\n  },\n  \"Motherboard\": {\n    \"Vendor\": \"Example\",\n    \"Name\": \"Board\"\n  },\n  \"TPM\": {\n    \"SpecVersion\": \"2.0\",\n    \"Identifier\": \"EXAMPLE\",\n    \"Activated\": \"Yes\"\n  }\n}\n",
+    "stderr": ""
+  },
+  "deviceinfo raw": {
+    "code": 0,
+    "stdout": "{\n  \"action\": \"getsysinfo\",\n  \"node\": {\n    \"_id\": \"node//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\n    \"name\": \"host-alpha\",\n    \"conn\": 1,\n    \"osdesc\": \"Windows 11\",\n    \"agent\": {\n      \"id\": 4,\n      \"ver\": 1234\n    },\n    \"lastconnect\": 1700000000000,\n    \"lastaddr\": \"10.0.0.5:1234\"\n  },\n  \"hardware\": {\n    \"windows\": {\n      \"osinfo\": {\n        \"OSArchitecture\": \"x64\"\n      }\n    },\n    \"identifiers\": {\n      \"bios_vendor\": \"Example\",\n      \"bios_version\": \"1.0\",\n      \"board_vendor\": \"Example\",\n      \"board_name\": \"Board\"\n    },\n    \"tpm\": {\n      \"SpecVersion\": \"2.0\",\n      \"ManufacturerId\": \"EXAMPLE\",\n      \"IsActivated\": true\n    }\n  },\n  \"responseid\": \"meshctrl\"\n}\n",
+    "stderr": ""
+  },
+  "adduser": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "edituser": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "removeuser": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "adddevicegroup": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "removedevicegroup": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "editdevicegroup": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "broadcast": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "addusertodevicegroup": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "removeuserfromdevicegroup": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "addusertodevice": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "removeuserfromdevice": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "sendinviteemail": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "generateinvitelink": {
+    "code": 0,
+    "stdout": "https://mc.example.test/invite\n",
+    "stderr": ""
+  },
+  "movetodevicegroup": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "addlocaldevice": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "addamtdevice": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "addusergroup": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "removeusergroup": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "addtousergroup": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "removefromusergroup": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "removeallusersfromusergroup": {
+    "code": 0,
+    "stdout": "Removing user//pilot\nok\n",
+    "stderr": ""
+  },
+  "runcommand": {
+    "code": 0,
+    "stdout": "OK\n",
+    "stderr": ""
+  },
+  "runcommand reply": {
+    "code": 0,
+    "stdout": "pilot\n",
+    "stderr": ""
+  },
+  "deviceopenurl": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "devicemessage": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "devicetoast": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "groupmessage": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "grouptoast": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "devicepower wake": {
+    "code": 0,
+    "stdout": "Used 1 device(s) to send wake packets\n",
+    "stderr": ""
+  },
+  "devicepower off": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "webrelay": {
+    "code": 0,
+    "stdout": "URL: https://mc.example.test/relay\n",
+    "stderr": ""
+  },
+  "devicesharing list": {
+    "code": 0,
+    "stdout": "----------\nIdentifier:   abc123\nType:         Terminal + View Only Desktop\nUserId:       user//pilot\nGuest Name:   Guest\nUser Consent: Desktop Notify\nStart Time:   11/14/2023, 10:13:20 PM\nExpire Time:  11/14/2023, 11:13:20 PM\nDuration:     60 minutes\nRecurring:    Daily\nURL:          https://mc.example.test/share\n",
+    "stderr": ""
+  },
+  "devicesharing add": {
+    "code": 0,
+    "stdout": "ID: abc123\nURL: https://mc.example.test/share\n",
+    "stderr": ""
+  },
+  "devicesharing remove": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "report": {
+    "code": 0,
+    "stdout": "group,user,sessions\nuser//pilot,user//pilot,3\n",
+    "stderr": ""
+  },
+  "config missing": {
+    "code": 0,
+    "stdout": "Unable to find config.json.\n",
+    "stderr": ""
+  },
+  "shell missing id": {
+    "code": 0,
+    "stdout": "Missing device id, use --id '[deviceid]'\n",
+    "stderr": ""
+  },
+  "upload missing file": {
+    "code": 0,
+    "stdout": "Local file missing, use --file [file] specify the file to upload\n",
+    "stderr": ""
+  },
+  "download missing target": {
+    "code": 0,
+    "stdout": "Target path missing, use --target [path] to specify the local download location\n",
+    "stderr": ""
+  },
+  "editdevice missing id": {
+    "code": 0,
+    "stdout": "Missing device id, use --id '[deviceid]'\n",
+    "stderr": ""
+  },
+  "listdevices": {
+    "code": 0,
+    "stdout": "\r\nDevice group: \"Alpha Group\"\nid, name, icon, conn, pwr\r\n-------------------------\n\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\", \"host-alpha\", 2, 1, 1\n\r\nDevice group: \"Bravo Group\"\nid, name, icon, conn, pwr\r\n-------------------------\n\"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\", \"host-beta\", 0, 0, 0\n",
+    "stderr": ""
+  },
+  "listdevices json": {
+    "code": 0,
+    "stdout": "[\n  {\n    \"_id\": \"node//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\n    \"name\": \"host-alpha\",\n    \"icon\": 2,\n    \"conn\": 1,\n    \"pwr\": 1,\n    \"tags\": [\n      \"existing\"\n    ],\n    \"meshid\": \"mesh//MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEx\",\n    \"groupname\": \"Alpha Group\"\n  },\n  {\n    \"_id\": \"node//BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\",\n    \"name\": \"host-beta\",\n    \"conn\": 0,\n    \"pwr\": 0,\n    \"meshid\": \"mesh//MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIy\",\n    \"groupname\": \"Bravo Group\"\n  }\n]\n",
+    "stderr": ""
+  },
+  "listdevices csv": {
+    "code": 0,
+    "stdout": "\"MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEx\",\"Alpha Group\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"host-alpha\",2,1,1\n\"MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIy\",\"Bravo Group\",\"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\",\"host-beta\",0,0,0\n",
+    "stderr": ""
+  },
+  "listdevices id": {
+    "code": 0,
+    "stdout": "id, name, icon, conn, pwr\r\n-------------------------\n\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\", \"host-alpha\", 2, 1, 1\nid, name, icon, conn, pwr\r\n-------------------------\n\"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\", \"host-beta\", 0, 0, 0\n",
+    "stderr": ""
+  },
+  "editdevice desc": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  },
+  "editdevice addtag": {
+    "code": 0,
+    "stdout": "ok\n",
+    "stderr": ""
+  }
+}

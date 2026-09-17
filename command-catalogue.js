@@ -22,14 +22,27 @@ const crypto = require('crypto');
  *                later tickets; it carries no behaviour.
  *   args         Declared arguments: { name, type, required, description }
  *                where type is 'string' | 'number' | 'boolean'. An optional
- *                'cli' names the meshctrl flag when it differs from name.
- *                The MCP tool schema and its validation are generated from
- *                this list; nothing per tool is hand written.
+ *                'cli' names the meshctrl flag when it differs from name, and
+ *                an optional 'cliMessage' is the exact text the CLI prints
+ *                when the argument is missing. The MCP tool schema and its
+ *                validation are generated from the declared arguments only;
+ *                the CLI argument handling is generated from the same list.
  *   auth         Descriptive rights metadata: { user: true, rights: [...] }
  *                where rights lists the server permission names an account
  *                typically needs. It documents, it does not enforce: the
  *                server remains the only authority. Null when undeclared.
- *   cli          { name } mapping onto the meshctrl command.
+ *   cli          { name, format, checks? } mapping onto the meshctrl command.
+ *                'format' renders the command value as the bytes meshctrl
+ *                prints; it is called with (value, args, cli) where cli is the
+ *                parse of the raw command line (json, raw, csv, hex and the
+ *                like). Returning null prints nothing. 'checks' is an optional
+ *                ordered argument check list: { arg } (a declared argument is
+ *                required), { anyOf: [...] } (one of the flags must be present)
+ *                or { test: (argv) => boolean }, each carrying the exact
+ *                message to print when it fails. A command the catalogue
+ *                cannot express is not silently hand written in meshctrl: it
+ *                is enumerated with its reason in CLI_EXCEPTIONS
+ *                (cli-dispatch.js), and the tests keep that list complete.
  *   mcp          { name } tool name in the MCP bridge, or null when the
  *                command has no tool surface yet.
  *   protocol     How to execute through the client. One of:
@@ -50,9 +63,7 @@ const crypto = require('crypto');
  *                (response, args) => spec[] issues requests derived from a
  *                response, such as one membership removal per user; and an
  *                'optional' request may fail without failing the command.
- *   format       (value, args) => string. value is the response (single
- *                request), the ordered response array (several requests), or
- *                the handshake value (from). Returns the tool text.
+ *   format       (value, args) => string. The MCP tool text.
  *   target       (args) => string used for the audit record, or null.
  *   omitted      True on a command the bridge specification deliberately
  *                leaves without a tool surface (file transfer). It keeps its
@@ -65,6 +76,7 @@ const crypto = require('crypto');
 
 const fs = require('fs');
 const path = require('path');
+const util = require('util');
 
 /** Replace quotes and line breaks so one field stays on one text line. */
 function escapeField(value) {
@@ -485,16 +497,19 @@ function formatRemoveAllUsersFromUserGroup(responses, args) {
 }
 
 /** The kind of membership identifier meshctrl accepts: user, mesh or node. */
-function memberKind(id) {
-    if (String(id).startsWith('user/')) { return 'user'; }
-    if (String(id).startsWith('mesh/')) { return 'mesh'; }
-    if (String(id).startsWith('node/')) { return 'node'; }
+function memberKind(args) {
+    if (args.userid != null) { return 'user'; }
+    if (args.meshid != null) { return 'mesh'; }
+    if (args.nodeid != null) { return 'node'; }
+    if (String(args.id).startsWith('user/')) { return 'user'; }
+    if (String(args.id).startsWith('mesh/')) { return 'mesh'; }
+    if (String(args.id).startsWith('node/')) { return 'node'; }
     return null;
 }
 
 /** The action that adds or removes one membership identifier. */
 function membershipAction(args, add) {
-    const kind = memberKind(args.id);
+    const kind = memberKind(args);
     if (kind === 'user') { return add ? 'addusertousergroup' : 'removeuserfromusergroup'; }
     if (kind === 'mesh') { return add ? 'addmeshuser' : 'removemeshuser'; }
     if (kind === 'node') { return 'adddeviceuser'; }
@@ -503,22 +518,29 @@ function membershipAction(args, add) {
 
 /** The protocol params for adding a user, device group or device to a user group. */
 function addToUserGroupParams(args) {
-    const kind = memberKind(args.id);
+    const kind = memberKind(args);
     const ugrpid = completeUserGroupId(args.groupid, args.domain);
     const rights = (args.rights != null) ? parseInt(args.rights, 10) : 0;
-    if (kind === 'user') { return { ugrpid: ugrpid, usernames: [String(args.id).split('/')[2]] }; }
-    if (kind === 'mesh') { return { meshid: args.id, userid: ugrpid, meshadmin: rights }; }
-    if (kind === 'node') { return { nodeid: args.id, userids: [ugrpid], rights: rights }; }
+    if (kind === 'user') {
+        const userid = (args.userid != null) ? args.userid : args.id;
+        return { ugrpid: ugrpid, usernames: [String(userid).split('/')[2]] };
+    }
+    if (kind === 'mesh') {
+        return { meshid: (args.meshid != null) ? args.meshid : args.id, userid: ugrpid, meshadmin: rights };
+    }
+    if (kind === 'node') {
+        return { nodeid: (args.nodeid != null) ? args.nodeid : args.id, userids: [ugrpid], rights: rights };
+    }
     throw new Error('The identifier must start with user/, mesh/ or node/.');
 }
 
 /** The protocol params for removing a user, device group or device from a user group. */
 function removeFromUserGroupParams(args) {
-    const kind = memberKind(args.id);
+    const kind = memberKind(args);
     const ugrpid = completeUserGroupId(args.groupid, args.domain);
-    if (kind === 'user') { return { ugrpid: ugrpid, userid: args.id }; }
-    if (kind === 'mesh') { return { meshid: args.id, userid: ugrpid }; }
-    if (kind === 'node') { return { nodeid: args.id, userids: [ugrpid], rights: 0, remove: true }; }
+    if (kind === 'user') { return { ugrpid: ugrpid, userid: (args.userid != null) ? args.userid : args.id }; }
+    if (kind === 'mesh') { return { meshid: (args.meshid != null) ? args.meshid : args.id, userid: ugrpid }; }
+    if (kind === 'node') { return { nodeid: (args.nodeid != null) ? args.nodeid : args.id, userids: [ugrpid], rights: 0, remove: true }; }
     throw new Error('The identifier must start with user/, mesh/ or node/.');
 }
 
@@ -988,6 +1010,556 @@ function formatInviteLink(response) {
 }
 
 // ---------------------------------------------------------------------------
+// CLI rendering: the exact bytes meshctrl prints for a command result. The
+// functions below are the CLI half of each entry's presentation, declared on
+// the entry as cli.format next to the MCP format. They are called with the
+// command value, the built argument object and the parsed command line, and
+// return the printed text (null prints nothing). Keeping them here, beside
+// the MCP formats and the protocol mapping, is what stops the CLI from
+// drifting away from the catalogue.
+// ---------------------------------------------------------------------------
+
+/** Print one field of a serverinfo or userinfo response the way the CLI does. */
+function cliFieldLine(key, value) {
+    return key + ': ' + ((typeof value === 'string') ? value : util.inspect(value));
+}
+
+function cliServerInfo(value, args, cli) {
+    if (cli.json) { return JSON.stringify(value, ' ', 2); }
+    const lines = [];
+    for (const key of Object.keys(value)) { lines.push(cliFieldLine(key, value[key])); }
+    return lines.join('\n');
+}
+
+function cliServerVersion(value, args, cli) {
+    if (cli.json) { return JSON.stringify(value.tags, ' ', 2); }
+    return formatServerVersion(value);
+}
+
+/** The CLI listusers rendering: filter, then --json, then the two probes. */
+function cliUsers(value, args, cli) {
+    let users = Array.isArray(value.users) ? value.users : [];
+    if (args.filter != null) {
+        const filters = String(args.filter).toLowerCase().split(',');
+        users = users.filter((user) => {
+            const twoFactor = (user.otphkeys != null) || (user.otpkeys != null) || (user.otpsecret != null);
+            if ((filters.indexOf('2fa') >= 0) && twoFactor) { return true; }
+            if ((filters.indexOf('no2fa') >= 0) && (twoFactor === false)) { return true; }
+            return false;
+        });
+    }
+    if (cli.json) { return JSON.stringify(users, ' ', 2); }
+    if (args.idexists != null) {
+        for (const user of users) {
+            if ((user._id == args.idexists) || (String(user._id).split('/')[2] == args.idexists)) { return '1'; }
+        }
+        return '0';
+    }
+    if (args.nameexists != null) {
+        for (const user of users) {
+            if (user.name == args.nameexists) { return user._id; }
+        }
+        return null;
+    }
+    const lines = ['id, name, email\r\n---------------'];
+    for (const user of users) {
+        let line = '"' + String(user._id).split('/')[2] + '", "' + user.name + '"';
+        if (user.email != null) { line += ', "' + user.email + '"'; }
+        lines.push(line);
+    }
+    return lines.join('\n');
+}
+
+/** The CLI listusersessions rendering: no sessions prints nothing at all. */
+function cliUserSessions(value, args, cli) {
+    const sessions = ((value != null) && (value.wssessions != null)) ? value.wssessions : {};
+    if (cli.json) { return JSON.stringify(sessions, ' ', 2); }
+    const lines = [];
+    for (const id of Object.keys(sessions)) {
+        lines.push(id + ', ' + ((sessions[id] > 1) ? (sessions[id] + ' sessions.') : '1 session.'));
+    }
+    return (lines.length > 0) ? lines.join('\n') : null;
+}
+
+/** The CLI listusergroups rendering: a tree by default, JSON on request. */
+function cliUserGroups(value, args, cli) {
+    const groups = ((value != null) && (value.ugroups != null)) ? value.ugroups : {};
+    if (cli.json) { return JSON.stringify(groups, ' ', 2); }
+    const lines = [];
+    for (const id of Object.keys(groups)) {
+        const group = groups[id];
+        let header = id + ', ' + group.name;
+        if (group.desc && (group.desc != '')) { header += ', ' + group.desc; }
+        lines.push(header);
+        const mesh = [], user = [], node = [];
+        if (group.links != null) {
+            for (const link of Object.keys(group.links)) {
+                if (link.startsWith('mesh/')) { mesh.push(link); }
+                if (link.startsWith('user/')) { user.push(link); }
+                if (link.startsWith('node/')) { node.push(link); }
+            }
+        }
+        lines.push('  Users:');
+        if (user.length > 0) { for (const link of user) { lines.push('    ' + link); } } else { lines.push('    (None)'); }
+        lines.push('  Device Groups:');
+        if (mesh.length > 0) { for (const link of mesh) { lines.push('    ' + link + ', ' + group.links[link].rights); } } else { lines.push('    (None)'); }
+        lines.push('  Devices:');
+        if (node.length > 0) { for (const link of node) { lines.push('    ' + link + ', ' + group.links[link].rights); } } else { lines.push('    (None)'); }
+    }
+    return lines.join('\n');
+}
+
+/** The CLI listdevicegroups rendering, including its --json/--hex forms. */
+function cliDeviceGroups(value, args, cli) {
+    const meshes = Array.isArray(value.meshes) ? value.meshes : [];
+    if (cli.json) {
+        if (args.hex) {
+            return JSON.stringify(meshes.map((mesh) => Object.assign({}, mesh, { _idhex: formatMeshId(mesh._id, true) })), ' ', 2);
+        }
+        return JSON.stringify(meshes, ' ', 2);
+    }
+    if (args.idexists != null) {
+        for (const mesh of meshes) {
+            if ((mesh._id == args.idexists) || (String(mesh._id).split('/')[2] == args.idexists)) { return '1'; }
+        }
+        return '0';
+    }
+    if (args.nameexists != null) {
+        for (const mesh of meshes) {
+            if (mesh.name == args.nameexists) { return mesh._id; }
+        }
+        return null;
+    }
+    const lines = ['id, name\r\n---------------'];
+    for (const mesh of meshes) {
+        const mid = (args.hex === true) ? formatMeshId(mesh._id, true) : shortId(mesh._id);
+        lines.push('"' + mid + '", "' + mesh.name + '"');
+    }
+    return lines.join('\n');
+}
+
+/**
+* The CLI listusersofdevicegroup rendering. The CLI matches only the base64
+* id segment, unlike the tool, which accepts a full mesh// id as well.
+*/
+function cliDeviceGroupUsers(value, args, cli) {
+    const meshes = Array.isArray(value.meshes) ? value.meshes : [];
+    for (const mesh of meshes) {
+        if (String(mesh._id).split('/')[2] == args.id) {
+            if (cli.json) { return JSON.stringify(mesh.links, ' ', 2); }
+            const lines = ['userid, rights\r\n---------------'];
+            for (const id of Object.keys(mesh.links)) {
+                lines.push(String(id).split('/')[2] + ', ' + meshRightsNames(mesh.links[id].rights).join(', '));
+            }
+            return lines.join('\n');
+        }
+    }
+    return 'Group id not found';
+}
+
+/** The CLI CSV cell formatting, kept bit for bit so its quirks are unchanged. */
+function csvFormatArray(x) {
+    var y = [];
+    for (var i in x) { if ((x[i] == null) || (x[i] == '')) { y.push(''); } else { y.push('"' + x[i].split('"').join('') + '"'); } }
+    return y.join(',');
+}
+
+/** The CLI listevents rendering: --raw, --json, then the three CSV shapes. */
+function cliEvents(value, args, cli) {
+    const events = Array.isArray(value.events) ? value.events : [];
+    if (cli.raw) { return JSON.stringify(events); }
+    if (cli.json) { return JSON.stringify(events, ' ', 2); }
+    const lines = [];
+    if ((args.id == null) && (args.userid == null)) {
+        lines.push('time,type,action,nodeid,userid,msg');
+        for (const event of events) { lines.push(csvFormatArray([event.time, event.etype, event.action, event.nodeid, event.userid, event.msg])); }
+    } else if (args.id != null) {
+        lines.push('time,type,action,userid,msg');
+        for (const event of events) { lines.push(csvFormatArray([event.time, event.etype, event.action, event.userid, event.msg])); }
+    } else {
+        lines.push('time,type,action,nodeid,msg');
+        for (const event of events) { lines.push(csvFormatArray([event.time, event.etype, event.action, event.nodeid, event.msg])); }
+    }
+    return lines.join('\n');
+}
+
+/** The CLI indexagenterrorlog rendering: silent when nothing is STUCK/FATAL. */
+function cliAgentErrorLog(index) {
+    if ((index == null) || (index.length === 0)) { return null; }
+    return formatAgentErrorLog(index);
+}
+
+/** The CLI logintokens rendering: --json inspects, everything else prints. */
+function cliLoginTokens(value, args, cli) {
+    if (cli.json) {
+        if (args.add) {
+            // The CLI's responseid is fixed, and --json printed it verbatim.
+            return util.inspect(Object.assign({}, value, { responseid: 'meshctrl' }));
+        }
+        return util.inspect(value.loginTokens);
+    }
+    return formatLoginTokens(value, args);
+}
+
+/** The CLI's message, toast and open-url acknowledgement: the server result. */
+function cliResult(value) {
+    return String(value.result);
+}
+
+/** The CLI runcommand rendering: the server result, collected output included. */
+function cliRunCommand(value) {
+    return String(value.result);
+}
+
+/** The CLI devicepower rendering: the server result, wake failures included. */
+function cliPowerAction(value) {
+    return String(value.result);
+}
+
+/** The CLI groupmessage rendering: it always reports the dispatch. */
+function cliGroupMessage() {
+    return 'ok';
+}
+
+/** The CLI grouptoast rendering: the last toast reply; none sent prints nothing. */
+function cliGroupToast(value) {
+    if (!Array.isArray(value) || (value.length < 2)) { return null; }
+    return String(value[value.length - 1].result);
+}
+
+/** The CLI devicesharing rendering, including its locale date strings. */
+function cliDeviceShares(value, args, cli) {
+    if (value.action === 'createDeviceShareLink') {
+        const lines = [];
+        if (value.publicid != null) { lines.push('ID: ' + value.publicid); }
+        lines.push('URL: ' + value.url);
+        return lines.join('\n');
+    }
+    if (value.action === 'removeDeviceShare') {
+        return String(value.result);
+    }
+    const shares = Array.isArray(value.deviceShares) ? value.deviceShares : [];
+    if (shares.length === 0) { return 'No device sharing links for this device.'; }
+    if (cli.json) { return util.inspect(shares); }
+    const blocks = [];
+    for (const share of shares) {
+        const types = [];
+        if (share.p & 1) { types.push('Terminal'); }
+        if (share.p & 2) { types.push(share.viewOnly ? 'View Only Desktop' : 'Desktop'); }
+        if (share.p & 4) { types.push('Files'); }
+        const consent = [];
+        if (share.consent & 0x0001) { consent.push('Desktop Notify'); }
+        if (share.consent & 0x0008) { consent.push('Desktop Prompt'); }
+        if (share.consent & 0x0040) { consent.push('Desktop Connection Toolbar'); }
+        if (share.consent & 0x0002) { consent.push('Terminal Notify'); }
+        if (share.consent & 0x0010) { consent.push('Terminal Prompt'); }
+        if (share.consent & 0x0004) { consent.push('Files Notify'); }
+        if (share.consent & 0x0020) { consent.push('Files Prompt'); }
+        const lines = [
+            '----------',
+            'Identifier:   ' + share.publicid,
+            'Type:         ' + ((types.length > 0) ? types.join(' + ') : 'Unknown'),
+            'UserId:       ' + share.userid,
+            'Guest Name:   ' + share.guestName,
+            'User Consent: ' + consent.join(', ')
+        ];
+        if (share.startTime) { lines.push('Start Time:   ' + new Date(share.startTime).toLocaleString()); }
+        if (share.expireTime) { lines.push('Expire Time:  ' + new Date(share.expireTime).toLocaleString()); }
+        if (share.duration) { lines.push('Duration:     ' + share.duration + ' minute' + ((share.duration > 1) ? 's' : '')); }
+        if (share.recurring == 1) { lines.push('Recurring:    Daily'); }
+        if (share.recurring == 2) { lines.push('Recurring:    Weekly'); }
+        lines.push('URL:          ' + share.url);
+        blocks.push(lines.join('\n'));
+    }
+    return blocks.join('\n');
+}
+
+/** The CLI webrelay rendering. */
+function cliWebRelay(value) {
+    return 'URL: ' + value.url;
+}
+
+/** The CLI's template replacement for device information labels. */
+function formatTemplate(text) {
+    const values = Array.prototype.slice.call(arguments, 1);
+    return text.replace(/{(\d+)}/g, function (match, number) { return (typeof values[number] != 'undefined') ? values[number] : match; });
+}
+
+/** Agent architecture names, in the order meshctrl prints them. */
+const AGENT_ARCHITECTURES = ["Unknown", "Windows 32bit console", "Windows 64bit console", "Windows 32bit service", "Windows 64bit service", "Linux 32bit", "Linux 64bit", "MIPS", "XENx86", "Android", "Linux ARM", "macOS x86-32bit", "Android x86", "PogoPlug ARM", "Android", "Linux Poky x86-32bit", "macOS x86-64bit", "ChromeOS", "Linux Poky x86-64bit", "Linux NoKVM x86-32bit", "Linux NoKVM x86-64bit", "Windows MinCore console", "Windows MinCore service", "NodeJS", "ARM-Linaro", "ARMv6l / ARMv7l", "ARMv8 64bit", "ARMv6l / ARMv7l / NoKVM", "MIPS24KC (OpenWRT)", "Apple Silicon", "FreeBSD x86-64", "Unknown", "Linux ARM 64 bit", "Alpine Linux x86 64 Bit (MUSL)", "Assistant (Windows)", "Armada370 - ARM32/HF (libc/2.26)", "OpenWRT x86-64", "OpenBSD x86-64", "Unknown", "Unknown", "MIPSEL24KC (OpenWRT)", "ARMADA/CORTEX-A53/MUSL (OpenWRT)", "Windows ARM 64bit console", "Windows ARM 64bit service", "ARMVIRT32 (OpenWRT)", "RISC-V x86-64"];
+
+/**
+* The CLI deviceinfo rendering: the sectioned text report, or the raw and
+* JSON forms. Ported from the hand-written CLI so the output is unchanged.
+*/
+function cliDeviceInfo(responses, args, cli) {
+    const nodes = responses[0] || null;
+    const network = responses[1] || null;
+    const lastconnect = responses[2] || null;
+    const sysinfo = responses[3] || null;
+
+    // Fetch the node information
+    var node = null;
+    if ((sysinfo != null) && (sysinfo.node != null)) {
+        node = sysinfo.node;
+    } else if ((nodes != null) && (nodes.nodes != null)) {
+        for (var m in nodes.nodes) {
+            for (var n in nodes.nodes[m]) {
+                if (nodes.nodes[m][n]._id.indexOf(args.id) >= 0) { node = nodes.nodes[m][n]; }
+            }
+        }
+    }
+    if (((sysinfo == null) && (lastconnect == null) && (network == null)) || (node == null)) {
+        return 'Invalid device id';
+    }
+
+    var info = {};
+    if (lastconnect != null) { node.lastconnect = lastconnect.time; node.lastaddr = lastconnect.addr; }
+    if (cli.raw) { return JSON.stringify(Object.assign({}, sysinfo, { responseid: 'meshctrl' }), ' ', 2); }
+
+    // General
+    var output = {}, outputCount = 0;
+    if (node.name) { output["Server Name"] = node.name; outputCount++; }
+    if (node.rname) { output["Computer Name"] = node.rname; outputCount++; }
+    if (node.host != null) { output["Hostname"] = node.host; outputCount++; }
+    if (node.ip != null) { output["IP Address"] = node.ip; outputCount++; }
+    if (node.desc != null) { output["Description"] = node.desc; outputCount++; }
+    if (node.icon != null) { output["Icon"] = node.icon; outputCount++; }
+    if (node.tags) { output["Tags"] = node.tags; outputCount++; }
+    if (node.av && node.av.length > 0) {
+        var av = [];
+        for (var i in node.av) {
+            if (typeof node.av[i]['product'] == 'string') {
+                var name = node.av[i]['product'];
+                if (node.av[i]['updated'] === true) { name += ', updated'; }
+                if (node.av[i]['updated'] === false) { name += ', not updated'; }
+                if (node.av[i]['enabled'] === true) { name += ', enabled'; }
+                if (node.av[i]['enabled'] === false) { name += ', disabled'; }
+                av.push(name);
+            }
+        }
+        output["AntiVirus"] = av; outputCount++;
+    }
+    if (typeof node.defender == 'object') { output["Windows Defender"] = node.defender; outputCount++; }
+    if (node.pr && node.pr.length > 0) {
+        var pr = [];
+        for (var i in node.pr) { pr.push(node.pr[i]); }
+        output["Pending Reboot"] = pr; outputCount++;
+    }
+    if (typeof node.wsc == 'object') { output["Windows Security Center"] = node.wsc; outputCount++; }
+    if (typeof node.lsc == 'object') { output["Linux Security Center"] = node.lsc; outputCount++; }
+    if (outputCount > 0) { info["General"] = output; }
+
+    // Operating System
+    var hardware = null;
+    if ((sysinfo != null) && (sysinfo.hardware != null)) { hardware = sysinfo.hardware; }
+    if ((hardware && hardware.windows && hardware.windows.osinfo) || (hardware && hardware.linux) || node.osdesc) {
+        var output = {}, outputCount = 0;
+        if (node.rname) { output["Name"] = node.rname; outputCount++; }
+        if (node.osdesc) { output["Version"] = node.osdesc; outputCount++; }
+        if (hardware && hardware.windows && hardware.windows.osinfo) { var m = hardware.windows.osinfo; if (m.OSArchitecture) { output["Architecture"] = m.OSArchitecture; outputCount++; } }
+        if (hardware && hardware.linux) {
+            if (hardware.linux.arch) { output["Architecture"] = hardware.linux.arch; outputCount++; }
+            if (hardware.linux.kernel_release) { output["Kernel Release"] = hardware.linux.kernel_release; outputCount++; }
+            if (hardware.linux.kernel_build) { output["Kernel Build"] = hardware.linux.kernel_build; outputCount++; }
+        }
+        if (outputCount > 0) { info["Operating System"] = output; }
+    }
+
+    // MeshAgent
+    if (node.agent) {
+        var output = {}, outputCount = 0;
+        if ((node.agent != null) && (node.agent.id != null) && (node.agent.ver != null)) {
+            var str = '';
+            if (node.agent.id <= AGENT_ARCHITECTURES.length) { str = AGENT_ARCHITECTURES[node.agent.id]; } else { str = AGENT_ARCHITECTURES[0]; }
+            if (node.agent.ver != 0) { str += ' v' + node.agent.ver; }
+            output["Mesh Agent"] = str; outputCount++;
+        }
+        if ((node.conn & 1) != 0) {
+            output["Last agent connection"] = "Connected now"; outputCount++;
+        } else {
+            if (node.lastconnect) { output["Last agent connection"] = new Date(node.lastconnect).toLocaleString(); outputCount++; }
+        }
+        output["Agent status"] = ((node.conn & 1) != 0) ? "Connected now" : "Offline"; outputCount++;
+        if (node.lastaddr) {
+            var splitip = node.lastaddr.split(':');
+            if (splitip.length > 2) {
+                output["Last agent address"] = node.lastaddr; outputCount++;
+            } else {
+                output["Last agent address"] = splitip[0]; outputCount++;
+            }
+        }
+        if ((node.agent != null) && (node.agent.tag != null)) { output["Tag"] = node.agent.tag; outputCount++; }
+        if (outputCount > 0) { info["Mesh Agent"] = output; }
+    }
+
+    // Networking
+    if ((network != null) && (network.netif != null)) {
+        var output = {}, outputCount = 0, minfo = {};
+        for (var i in network.netif) {
+            var m = network.netif[i], moutput = {}, moutputCount = 0;
+            if (m.desc) { moutput["Description"] = m.desc; moutputCount++; }
+            if (m.mac) {
+                if (m.gatewaymac) {
+                    moutput["MAC Layer"] = formatTemplate("MAC: {0}, Gateway: {1}", m.mac, m.gatewaymac); moutputCount++;
+                } else {
+                    moutput["MAC Layer"] = formatTemplate("MAC: {0}", m.mac); moutputCount++;
+                }
+            }
+            if (m.v4addr && (m.v4addr != '0.0.0.0')) {
+                if (m.v4gateway && m.v4mask) {
+                    moutput["IPv4 Layer"] = formatTemplate("IP: {0}, Mask: {1}, Gateway: {2}", m.v4addr, m.v4mask, m.v4gateway); moutputCount++;
+                } else {
+                    moutput["IPv4 Layer"] = formatTemplate("IP: {0}", m.v4addr); moutputCount++;
+                }
+            }
+            if (moutputCount > 0) { minfo[m.name + (m.dnssuffix ? (', ' + m.dnssuffix) : '')] = moutput; info["Networking"] = minfo; }
+        }
+    }
+
+    if ((network != null) && (network.netif2 != null)) {
+        var minfo = {};
+        for (var i in network.netif2) {
+            var m = network.netif2[i], moutput = {}, moutputCount = 0;
+            if ((Array.isArray(m) == false) || (m.length < 1) || (m[0] == null) ||
+                ((typeof m[0].mac == 'string') && (m[0].mac.startsWith('00:00:00:00')))) {
+                continue;
+            }
+            var ifTitle = '' + i;
+            if ((m[0].fqdn != null) && (m[0].fqdn != '')) { ifTitle += ', ' + m[0].fqdn; }
+            if (typeof m[0].mac == 'string') {
+                if (m[0].gatewaymac) {
+                    moutput['MAC Layer'] = formatTemplate("MAC: {0}, Gateway: {1}", m[0].mac, m[0].gatewaymac);
+                } else {
+                    moutput['MAC Layer'] = formatTemplate("MAC: {0}", m[0].mac);
+                }
+                moutputCount++;
+            }
+            moutput['IPv4 Layer'] = '';
+            moutput['IPv6 Layer'] = '';
+            for (var j = 0; j < m.length; j++) {
+                var iplayer = m[j];
+                if ((iplayer.family == 'IPv4') || (iplayer.family == 'IPv6')) {
+                    if (iplayer.gateway && iplayer.netmask) {
+                        moutput[iplayer.family + ' Layer'] += formatTemplate("IP: {0}, Mask: {1}, Gateway: {2}  ", iplayer.address, iplayer.netmask, iplayer.gateway);
+                        moutputCount++;
+                    } else if (iplayer.address) {
+                        moutput[iplayer.family + ' Layer'] += formatTemplate("IP: {0}  ", iplayer.address);
+                        moutputCount++;
+                    }
+                }
+            }
+            if (moutput['IPv4 Layer'] == '') { delete moutput['IPv4 Layer']; }
+            if (moutput['IPv6 Layer'] == '') { delete moutput['IPv6 Layer']; }
+            if (moutputCount > 0) {
+                minfo[ifTitle] = moutput;
+                info["Networking"] = minfo;
+            }
+        }
+    }
+
+    // Intel AMT
+    if (node.intelamt != null) {
+        var output = {}, outputCount = 0;
+        output["Version"] = (node.intelamt.ver) ? ('v' + node.intelamt.ver) : ('<i>' + "Unknown" + '</i>'); outputCount++;
+        var provisioningStates = { 0: "Not Activated (Pre)", 1: "Not Activated (In)", 2: "Activated" };
+        var provisioningMode = '';
+        if ((node.intelamt.state == 2) && node.intelamt.flags) { if (node.intelamt.flags & 2) { provisioningMode = (', ' + "Client Control Mode (CCM)"); } else if (node.intelamt.flags & 4) { provisioningMode = (', ' + "Admin Control Mode (ACM)"); } }
+        output["Provisioning State"] = ((node.intelamt.state) ? (provisioningStates[node.intelamt.state]) : ('<i>' + "Unknown" + '</i>')) + provisioningMode; outputCount++;
+        output["Security"] = (node.intelamt.tls == 1) ? "Secured using TLS" : "TLS is not setup"; outputCount++;
+        output["Admin Credentials"] = ((node.intelamt.user == null) || (node.intelamt.user == '')) ? "Not Known" : "Known"; outputCount++;
+        if (outputCount > 0) { info["Intel Active Management Technology (Intel AMT)"] = output; }
+    }
+
+    if (hardware != null) {
+        if (hardware.identifiers) {
+            var output = {}, outputCount = 0, ident = hardware.identifiers;
+            if (ident.bios_vendor) { output["Vendor"] = ident.bios_vendor; outputCount++; }
+            if (ident.bios_version) { output["Version"] = ident.bios_version; outputCount++; }
+            if (ident.bios_serial) { output["Serial"] = ident.bios_serial; outputCount++; }
+            if (ident.bios_mode) { output["Mode"] = ident.bios_mode; outputCount++; }
+            if (outputCount > 0) { info["BIOS"] = output; }
+            output = {}, outputCount = 0;
+            if (ident.board_vendor) { output["Vendor"] = ident.board_vendor; outputCount++; }
+            if (ident.board_name) { output["Name"] = ident.board_name; outputCount++; }
+            if (ident.board_serial && (ident.board_serial != '')) { output["Serial"] = ident.board_serial; outputCount++; }
+            if (ident.board_version) { output["Version"] = ident.board_version; }
+            if (ident.product_uuid) { output["Identifier"] = ident.product_uuid; }
+            if (ident.cpu_name) { output["CPU"] = ident.cpu_name; }
+            if (ident.gpu_name) { for (var i in ident.gpu_name) { output["GPU" + (parseInt(i) + 1)] = ident.gpu_name[i]; } }
+            if (outputCount > 0) { info["Motherboard"] = output; }
+            output = {}, outputCount = 0;
+            if (ident.chassis_manufacturer) { output["Manufacturer"] = ident.chassis_manufacturer; outputCount++; }
+            if (ident.product_name) { output["Product Name"] = ident.product_name; outputCount++; }
+            if (ident.chassis_serial) { output["Serial"] = ident.chassis_serial; outputCount++; }
+            if (ident.chassis_assettag) { output["Asset Tag"] = ident.chassis_assettag; outputCount++; }
+            if (outputCount > 0) { info["System"] = output; }
+            output = {}, outputCount = 0;
+        }
+
+        if (hardware.tpm) {
+            var output = {}, outputCount = 0, tpm = hardware.tpm;
+            if (tpm.SpecVersion) { output["SpecVersion"] = parseFloat(tpm.SpecVersion).toFixed(1); outputCount++; }
+            if (tpm.ManufacturerId) { output["Identifier"] = tpm.ManufacturerId; outputCount++; }
+            if (tpm.ManufacturerVersion) { output["Version"] = tpm.ManufacturerVersion; outputCount++; }
+            if (tpm.IsActivated != null) { output["Activated"] = (tpm.IsActivated ? "Yes" : "No"); outputCount++; }
+            if (tpm.IsEnabled != null) { output["Enabled"] = (tpm.IsEnabled ? "Yes" : "No"); outputCount++; }
+            if (tpm.IsOwned != null) { output["Owned"] = (tpm.IsOwned ? "Yes" : "No"); outputCount++; }
+            if (outputCount > 0) { info["TPM"] = output; }
+            output = {}, outputCount = 0;
+        }
+
+        if (hardware.windows && hardware.windows.memory) {
+            var output = {}, outputCount = 0, minfo = {};
+            hardware.windows.memory.sort(function (a, b) { if (a.BankLabel > b.BankLabel) return 1; if (a.BankLabel < b.BankLabel) return -1; return 0; });
+            for (var i in hardware.windows.memory) {
+                var m = hardware.windows.memory[i], moutput = {}, moutputCount = 0;
+                if (m.Capacity && m.Speed) { moutput["Capacity/Speed"] = (m.Capacity / 1024 / 1024) + " Mb, " + m.Speed + " Mhz"; moutputCount++; }
+                else if (m.Capacity) { moutput["Capacity"] = (m.Capacity / 1024 / 1024) + " Mb"; moutputCount++; }
+                if (m.PartNumber) { moutput["Part Number"] = ((m.Manufacturer && m.Manufacturer != 'Undefined') ? (m.Manufacturer + ', ') : '') + m.PartNumber; moutputCount++; }
+                if (moutputCount > 0) { minfo[m.BankLabel ? m.BankLabel : (m.DeviceLocator ? m.DeviceLocator : 'Unknown')] = moutput; info["Memory"] = minfo; }
+            }
+        }
+
+        if (hardware.identifiers && hardware.identifiers.storage_devices) {
+            var output = {}, outputCount = 0, minfo = {};
+            var ident = hardware.identifiers;
+            ident.storage_devices.sort(function (a, b) { if (a.Caption > b.Caption) return 1; if (a.Caption < b.Caption) return -1; return 0; });
+            for (var i in ident.storage_devices) {
+                var m = ident.storage_devices[i], moutput = {};
+                if (m.Size) {
+                    if (m.Model && (m.Model != m.Caption)) { moutput["Model"] = m.Model; outputCount++; }
+                    if ((typeof m.Size == 'string') && (parseInt(m.Size) == m.Size)) { m.Size = parseInt(m.Size); }
+                    if (typeof m.Size == 'number') { moutput["Capacity"] = Math.floor(m.Size / 1024 / 1024) + 'Mb'; outputCount++; }
+                    if (typeof m.Size == 'string') { moutput["Capacity"] = m.Size; outputCount++; }
+                    if (moutputCount > 0) { minfo[m.Caption] = moutput; info["Storage"] = minfo; }
+                }
+            }
+        }
+
+        if (hardware.windows && hardware.windows.volumes) { info["Volumes"] = hardware.windows.volumes; }
+        if (hardware.windows && hardware.windows.bitlocker) { info["Bitlocker cache"] = hardware.windows.bitlocker; }
+    }
+
+    if (cli.json) { return JSON.stringify(info, ' ', 2); }
+    const lines = [];
+    for (var i in info) {
+        lines.push('--- ' + i + ' ---');
+        for (var j in info[i]) {
+            if ((typeof info[i][j] == 'string') || (typeof info[i][j] == 'number')) {
+                lines.push('  ' + j + ': ' + info[i][j]);
+            } else {
+                lines.push('  ' + j + ':');
+                for (var k in info[i][j]) {
+                    lines.push('    ' + k + ': ' + info[i][j][k]);
+                }
+            }
+        }
+    }
+    return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // Config helpers: the local config.json operations meshctrl's config command
 // performs. Only the operation flags are declared here; the CLI's free-form
 // domain value flags (--title, --newAccounts and the like) cannot be expressed
@@ -1125,7 +1697,13 @@ const commands = [
             { name: 'rights', type: 'string', required: false, description: 'Server permissions: none, full or a comma separated list of manageusers, serverbackup, serverrestore, serverupdate, fileaccess, locked, nonewgroups, notools, usergroups, recordings, locksettings, allevents, nonewdevices.' }
         ],
         auth: { user: true, rights: ['manageusers'] },
-        cli: { name: 'edituser' },
+        cli: {
+            name: 'edituser',
+            format: formatActionResult,
+            checks: [
+                { arg: 'userid', message: 'Edit account user missing, use --userid [id]' }
+            ]
+        },
         mcp: { name: 'mesh_edit_user' },
         protocol: {
             action: 'edituser',
@@ -1154,7 +1732,7 @@ const commands = [
             { name: 'nameexists', type: 'string', required: false, description: 'Return the user id for this user name, or an empty result when the name is unknown.' }
         ],
         auth: { user: true, rights: ['manageusers'] },
-        cli: { name: 'listusers' },
+        cli: { name: 'listusers', format: cliUsers },
         mcp: { name: 'mesh_list_users' },
         protocol: { action: 'users', params: () => ({}) },
         format: formatUsers,
@@ -1166,7 +1744,7 @@ const commands = [
         family: 'inspection',
         args: [],
         auth: { user: true, rights: ['manageusers'] },
-        cli: { name: 'listusersessions' },
+        cli: { name: 'listusersessions', format: cliUserSessions },
         mcp: { name: 'mesh_list_user_sessions' },
         protocol: { action: 'wssessioncount', params: () => ({}), matchAction: true },
         format: formatUserSessions,
@@ -1182,7 +1760,7 @@ const commands = [
             { name: 'hex', type: 'boolean', required: false, description: 'Render group ids as 0x hex instead of base64.' }
         ],
         auth: { user: true, rights: [] },
-        cli: { name: 'listdevicegroups' },
+        cli: { name: 'listdevicegroups', format: cliDeviceGroups },
         mcp: { name: 'mesh_list_groups' },
         protocol: { action: 'meshes', params: () => ({}) },
         format: formatDeviceGroups,
@@ -1220,7 +1798,13 @@ const commands = [
             { name: 'id', type: 'string', required: true, description: 'Device group id (mesh//...) or its base64 id segment.' }
         ],
         auth: { user: true, rights: ['manageusers'] },
-        cli: { name: 'listusersofdevicegroup' },
+        cli: {
+            name: 'listusersofdevicegroup',
+            format: cliDeviceGroupUsers,
+            checks: [
+                { arg: 'id', message: "Missing device id, use --id '[deviceid]'" }
+            ]
+        },
         mcp: { name: 'mesh_list_device_group_users' },
         protocol: { action: 'meshes', params: () => ({}) },
         format: formatDeviceGroupUsers,
@@ -1236,7 +1820,17 @@ const commands = [
             { name: 'limit', type: 'number', required: false, description: 'Maximum number of events to return.' }
         ],
         auth: { user: true, rights: ['allevents'] },
-        cli: { name: 'listevents' },
+        cli: {
+            name: 'listevents',
+            format: cliEvents,
+            prepare: (args) => {
+                // The CLI drops a limit that is not a positive integer.
+                if (args.limit != null) {
+                    const limit = parseInt(args.limit, 10);
+                    if (isNaN(limit) || (limit < 1)) { delete args.limit; } else { args.limit = limit; }
+                }
+            }
+        },
         mcp: { name: 'mesh_get_events' },
         protocol: {
             action: 'events',
@@ -1261,7 +1855,7 @@ const commands = [
             { name: 'remove', type: 'string', required: false, description: 'Remove the login token with this user name.' }
         ],
         auth: { user: true, rights: [] },
-        cli: { name: 'logintokens' },
+        cli: { name: 'logintokens', format: cliLoginTokens },
         mcp: { name: 'mesh_login_tokens' },
         protocol: {
             action: (args) => (args.add ? 'createLoginToken' : 'loginTokens'),
@@ -1286,7 +1880,7 @@ const commands = [
         family: 'inspection',
         args: [],
         auth: { user: true, rights: [] },
-        cli: { name: 'serverinfo' },
+        cli: { name: 'serverinfo', format: cliServerInfo },
         mcp: { name: 'mesh_server_info' },
         protocol: { from: 'serverInfo' },
         format: formatJson,
@@ -1298,7 +1892,7 @@ const commands = [
         family: 'inspection',
         args: [],
         auth: { user: true, rights: [] },
-        cli: { name: 'serverversion' },
+        cli: { name: 'serverversion', format: cliServerVersion },
         mcp: { name: 'mesh_server_version' },
         protocol: { action: 'serverversion', params: () => ({}) },
         format: formatServerVersion,
@@ -1310,7 +1904,7 @@ const commands = [
         family: 'inspection',
         args: [],
         auth: { user: true, rights: [] },
-        cli: { name: 'userinfo' },
+        cli: { name: 'userinfo', format: cliServerInfo },
         mcp: { name: 'mesh_user_info' },
         protocol: { from: 'userInfo' },
         format: formatJson,
@@ -1333,7 +1927,14 @@ const commands = [
             { name: 'rights', type: 'string', required: false, description: 'Server permissions: none, full or a comma separated list of manageusers, serverbackup, serverrestore, serverupdate, fileaccess, locked, nonewgroups, notools, usergroups, recordings, locksettings, allevents, nonewdevices.' }
         ],
         auth: { user: true, rights: ['manageusers'] },
-        cli: { name: 'adduser' },
+        cli: {
+            name: 'adduser',
+            format: formatActionResult,
+            checks: [
+                { arg: 'user', message: 'New account name missing, use --user [name]' },
+                { test: (argv) => (argv.pass != null) || (argv.randompass != null), message: 'New account password missing, use --pass [password] or --randompass' }
+            ]
+        },
         mcp: { name: 'mesh_add_user' },
         protocol: {
             action: 'adduser',
@@ -1364,7 +1965,13 @@ const commands = [
             { name: 'domain', type: 'string', required: false, description: 'Account domain, only for cross-domain administrators.' }
         ],
         auth: { user: true, rights: ['manageusers'] },
-        cli: { name: 'removeuser' },
+        cli: {
+            name: 'removeuser',
+            format: formatActionResult,
+            checks: [
+                { arg: 'userid', message: 'Remove account userid missing, use --userid [id]' }
+            ]
+        },
         mcp: { name: 'mesh_remove_user' },
         protocol: {
             action: 'deleteuser',
@@ -1386,7 +1993,13 @@ const commands = [
             { name: 'consent', type: 'number', required: false, description: 'User consent flags: 1 desktop notify, 2 terminal notify, 4 files notify, 8 desktop prompt, 16 terminal prompt, 32 files prompt, 64 desktop toolbar.' }
         ],
         auth: { user: true, rights: [] },
-        cli: { name: 'adddevicegroup' },
+        cli: {
+            name: 'adddevicegroup',
+            format: formatActionResult,
+            checks: [
+                { arg: 'name', message: 'Message group name, use --name [name]' }
+            ]
+        },
         mcp: { name: 'mesh_add_device_group' },
         protocol: {
             action: 'createmesh',
@@ -1412,7 +2025,13 @@ const commands = [
             { name: 'group', type: 'string', required: false, description: 'Device group name.' }
         ],
         auth: { user: true, rights: [] },
-        cli: { name: 'removedevicegroup' },
+        cli: {
+            name: 'removedevicegroup',
+            format: formatActionResult,
+            checks: [
+                { anyOf: ['meshid', 'group'], message: "Device group identifier missing, use --id '[groupid]' or --group [groupname]" }
+            ]
+        },
         mcp: { name: 'mesh_remove_device_group' },
         protocol: {
             action: 'deletemesh',
@@ -1442,7 +2061,13 @@ const commands = [
             { name: 'interactiveonly', type: 'boolean', required: false, description: 'With invitecodes, run the agent on demand only.' }
         ],
         auth: { user: true, rights: [] },
-        cli: { name: 'editdevicegroup' },
+        cli: {
+            name: 'editdevicegroup',
+            format: formatActionResult,
+            checks: [
+                { anyOf: ['meshid', 'group'], message: "Device group identifier missing, use --id '[groupid]' or --group [groupname]" }
+            ]
+        },
         mcp: { name: 'mesh_edit_device_group' },
         protocol: {
             action: 'editmesh',
@@ -1477,7 +2102,13 @@ const commands = [
             { name: 'user', type: 'string', required: false, description: 'Send the message to this user account (user//...) instead of every logged in user.' }
         ],
         auth: { user: true, rights: ['manageusers'] },
-        cli: { name: 'broadcast' },
+        cli: {
+            name: 'broadcast',
+            format: formatActionResult,
+            checks: [
+                { arg: 'msg', message: 'Message missing, use --msg [message]' }
+            ]
+        },
         mcp: { name: 'mesh_broadcast' },
         protocol: {
             action: 'userbroadcast',
@@ -1533,7 +2164,14 @@ const commands = [
             { name: 'nosoftware', type: 'boolean', required: false, description: 'Deny software access.' }
         ],
         auth: { user: true, rights: ['manageusers'] },
-        cli: { name: 'addusertodevicegroup' },
+        cli: {
+            name: 'addusertodevicegroup',
+            format: formatActionResult,
+            checks: [
+                { anyOf: ['meshid', 'group'], message: "Device group identifier missing, use --id '[groupid]' or --group [groupname]" },
+                { arg: 'userid', message: 'Add user to group missing useid, use --userid [userid]' }
+            ]
+        },
         mcp: { name: 'mesh_add_user_to_device_group' },
         protocol: {
             action: 'addmeshuser',
@@ -1557,7 +2195,14 @@ const commands = [
             { name: 'userid', type: 'string', required: true, description: 'User account id (user//...).' }
         ],
         auth: { user: true, rights: ['manageusers'] },
-        cli: { name: 'removeuserfromdevicegroup' },
+        cli: {
+            name: 'removeuserfromdevicegroup',
+            format: formatActionResult,
+            checks: [
+                { anyOf: ['meshid', 'group'], message: "Device group identifier missing, use --id '[groupid]' or --group [groupname]" },
+                { arg: 'userid', message: 'Remove user from group missing useid, use --userid [userid]' }
+            ]
+        },
         mcp: { name: 'mesh_remove_user_from_device_group' },
         protocol: {
             action: 'removemeshuser',
@@ -1596,7 +2241,14 @@ const commands = [
             { name: 'nosoftware', type: 'boolean', required: false, description: 'Deny software access.' }
         ],
         auth: { user: true, rights: ['manageusers'] },
-        cli: { name: 'addusertodevice' },
+        cli: {
+            name: 'addusertodevice',
+            format: formatActionResult,
+            checks: [
+                { arg: 'userid', message: 'Add user to device missing userid, use --userid [userid]' },
+                { arg: 'id', message: "Add user to device missing device id, use --id '[deviceid]'" }
+            ]
+        },
         mcp: { name: 'mesh_add_user_to_device' },
         protocol: {
             action: 'adddeviceuser',
@@ -1614,7 +2266,14 @@ const commands = [
             { name: 'userid', type: 'string', required: true, description: 'User account id (user//...).' }
         ],
         auth: { user: true, rights: ['manageusers'] },
-        cli: { name: 'removeuserfromdevice' },
+        cli: {
+            name: 'removeuserfromdevice',
+            format: formatActionResult,
+            checks: [
+                { arg: 'userid', message: 'Remove user from device missing userid, use --userid [userid]' },
+                { arg: 'id', message: "Remove user from device missing device id, use --id '[deviceid]'" }
+            ]
+        },
         mcp: { name: 'mesh_remove_user_from_device' },
         protocol: {
             action: 'adddeviceuser',
@@ -1635,7 +2294,14 @@ const commands = [
             { name: 'message', type: 'string', required: false, description: 'Message included in the email.' }
         ],
         auth: { user: true, rights: [] },
-        cli: { name: 'sendinviteemail' },
+        cli: {
+            name: 'sendinviteemail',
+            format: formatActionResult,
+            checks: [
+                { anyOf: ['meshid', 'group'], message: 'Device group identifier missing, use --id \'[groupid]\' or --group [groupname]' },
+                { arg: 'email', message: 'Device email is missing, use --email [email]' }
+            ]
+        },
         mcp: { name: 'mesh_send_invite_email' },
         protocol: {
             action: 'inviteAgent',
@@ -1662,7 +2328,14 @@ const commands = [
             { name: 'flags', type: 'number', required: false, description: 'Link mode: 0 interactive and background, 1 interactive only, 2 background only.' }
         ],
         auth: { user: true, rights: [] },
-        cli: { name: 'generateinvitelink' },
+        cli: {
+            name: 'generateinvitelink',
+            format: formatInviteLink,
+            checks: [
+                { anyOf: ['meshid', 'group'], message: 'Device group identifier missing, use --id \'[groupid]\' or --group [groupname]' },
+                { arg: 'hours', message: 'Invitation validity period missing, use --hours [hours]' }
+            ]
+        },
         mcp: { name: 'mesh_generate_invite_link' },
         protocol: {
             action: 'createInviteLink',
@@ -1706,7 +2379,14 @@ const commands = [
             { name: 'devid', type: 'string', required: true, description: 'Device id (node//...) to move.' }
         ],
         auth: { user: true, rights: ['managecomputers', 'editmesh'] },
-        cli: { name: 'movetodevicegroup' },
+        cli: {
+            name: 'movetodevicegroup',
+            format: formatActionResult,
+            checks: [
+                { anyOf: ['meshid', 'group'], message: 'Device group identifier missing, use --id \'[groupid]\' or --group [groupname]' },
+                { arg: 'devid', message: 'Device identifier missing, use --devid \'[deviceid]\'' }
+            ]
+        },
         mcp: { name: 'mesh_move_to_device_group' },
         protocol: {
             action: 'changeDeviceMesh',
@@ -1728,7 +2408,13 @@ const commands = [
             { name: 'id', type: 'string', required: true, description: 'Device id (node//...) or a unique part of it.' }
         ],
         auth: { user: true, rights: [] },
-        cli: { name: 'deviceinfo' },
+        cli: {
+            name: 'deviceinfo',
+            format: cliDeviceInfo,
+            checks: [
+                { arg: 'id', message: "Missing device id, use --id '[deviceid]'" }
+            ]
+        },
         mcp: { name: 'mesh_get_device' },
         protocol: [
             { action: 'nodes', params: () => ({}) },
@@ -1747,7 +2433,13 @@ const commands = [
             { name: 'id', type: 'string', required: true, description: 'Device id (node//...).' }
         ],
         auth: { user: true, rights: ['uninstall'] },
-        cli: { name: 'removedevice' },
+        cli: {
+            name: 'removedevice',
+            format: formatActionResult,
+            checks: [
+                { arg: 'id', message: "Missing device id, use --id '[deviceid]'" }
+            ]
+        },
         mcp: { name: 'mesh_remove_device' },
         protocol: {
             action: 'removedevices',
@@ -1799,7 +2491,15 @@ const commands = [
             { name: 'type', type: 'number', required: false, description: 'Device type: 4 Windows RDP (default), 6 Linux SSH/SCP/VNC, 29 macOS SSH/SCP/VNC.' }
         ],
         auth: { user: true, rights: ['managecomputers'] },
-        cli: { name: 'addlocaldevice' },
+        cli: {
+            name: 'addlocaldevice',
+            format: formatActionResult,
+            checks: [
+                { arg: 'meshid', message: "Missing device id, use --id '[deviceid]'" },
+                { arg: 'devicename', message: 'Missing devicename, use --devicename [devicename]' },
+                { arg: 'hostname', message: 'Missing hostname, use --hostname [hostname]' }
+            ]
+        },
         mcp: { name: 'mesh_add_local_device' },
         protocol: {
             action: 'addlocaldevice',
@@ -1825,7 +2525,17 @@ const commands = [
             { name: 'notls', type: 'boolean', required: false, description: 'Connect without TLS security.' }
         ],
         auth: { user: true, rights: ['managecomputers'] },
-        cli: { name: 'addamtdevice' },
+        cli: {
+            name: 'addamtdevice',
+            format: formatActionResult,
+            checks: [
+                { arg: 'meshid', message: "Missing device id, use --id '[deviceid]'" },
+                { arg: 'devicename', message: 'Missing devicename, use --devicename [devicename]' },
+                { arg: 'hostname', message: 'Missing hostname, use --hostname [hostname]' },
+                { arg: 'user', message: 'Missing user, use --user [user]' },
+                { arg: 'pass', message: 'Missing pass, use --pass [pass]' }
+            ]
+        },
         mcp: { name: 'mesh_add_amt_device' },
         protocol: {
             action: 'addamtdevice',
@@ -1848,7 +2558,13 @@ const commands = [
             { name: 'domain', type: 'string', required: false, description: 'User group domain, only for cross-domain administrators.' }
         ],
         auth: { user: true, rights: ['usergroups'] },
-        cli: { name: 'addusergroup' },
+        cli: {
+            name: 'addusergroup',
+            format: formatActionResult,
+            checks: [
+                { arg: 'name', message: 'New user group name missing, use --name [name]' }
+            ]
+        },
         mcp: { name: 'mesh_add_user_group' },
         protocol: {
             action: 'createusergroup',
@@ -1868,7 +2584,7 @@ const commands = [
         family: 'inspection',
         args: [],
         auth: { user: true, rights: ['manageusers'] },
-        cli: { name: 'listusergroups' },
+        cli: { name: 'listusergroups', format: cliUserGroups },
         mcp: { name: 'mesh_list_user_groups' },
         protocol: { action: 'usergroups', params: () => ({}) },
         format: formatUserGroups,
@@ -1883,7 +2599,13 @@ const commands = [
             { name: 'domain', type: 'string', required: false, description: 'User group domain, only for cross-domain administrators.' }
         ],
         auth: { user: true, rights: ['usergroups'] },
-        cli: { name: 'removeusergroup' },
+        cli: {
+            name: 'removeusergroup',
+            format: formatActionResult,
+            checks: [
+                { arg: 'groupid', message: "Remove user group id missing, use --groupid '[id]'" }
+            ]
+        },
         mcp: { name: 'mesh_remove_user_group' },
         protocol: {
             action: 'deleteusergroup',
@@ -1905,7 +2627,14 @@ const commands = [
             { name: 'reply', type: 'boolean', required: false, description: 'Wait for the command to finish and return its output. The wait is bounded by the bridge command timeout.' }
         ],
         auth: { user: true, rights: ['remotecommands', 'agentconsole'] },
-        cli: { name: 'runcommand' },
+        cli: {
+            name: 'runcommand',
+            format: cliRunCommand,
+            checks: [
+                { arg: 'id', message: "Missing device id, use --id '[deviceid]'" },
+                { arg: 'run', message: 'Missing run, use --run "command"' }
+            ]
+        },
         mcp: { name: 'mesh_run_command' },
         protocol: {
             action: 'runcommands',
@@ -1948,7 +2677,14 @@ const commands = [
             { name: 'openurl', type: 'string', required: true, description: 'URL to open on the remote device.' }
         ],
         auth: { user: true, rights: ['remotecontrol'] },
-        cli: { name: 'deviceopenurl' },
+        cli: {
+            name: 'deviceopenurl',
+            format: cliResult,
+            checks: [
+                { arg: 'id', message: "Missing device id, use --id '[deviceid]'" },
+                { arg: 'openurl', message: 'Remote URL, use --openurl [url] specify the link to open.' }
+            ]
+        },
         mcp: { name: 'mesh_device_open_url' },
         protocol: { action: 'msg', params: (args) => ({ type: 'openUrl', nodeid: args.id, url: args.openurl }) },
         format: () => 'Open URL request sent to the device.',
@@ -1965,7 +2701,14 @@ const commands = [
             { name: 'timeout', type: 'number', required: false, description: 'Milliseconds before the message box vanishes; 0 keeps it open until closed by hand. The CLI default is 120000.' }
         ],
         auth: { user: true, rights: ['remotecontrol'] },
-        cli: { name: 'devicemessage' },
+        cli: {
+            name: 'devicemessage',
+            format: cliResult,
+            checks: [
+                { arg: 'id', message: "Missing device id, use --id '[deviceid]'" },
+                { arg: 'msg', message: 'Remote message, use --msg "[message]" specify a remote message.' }
+            ]
+        },
         mcp: { name: 'mesh_device_message' },
         protocol: {
             action: 'msg',
@@ -1988,7 +2731,14 @@ const commands = [
             { name: 'title', type: 'string', required: false, description: 'Toast title, default "MeshCentral".' }
         ],
         auth: { user: true, rights: ['remotecontrol'] },
-        cli: { name: 'devicetoast' },
+        cli: {
+            name: 'devicetoast',
+            format: cliResult,
+            checks: [
+                { arg: 'id', message: "Missing device id, use --id '[deviceid]'" },
+                { arg: 'msg', message: 'Remote message, use --msg "[message]" specify a remote message.' }
+            ]
+        },
         mcp: { name: 'mesh_device_toast' },
         protocol: { action: 'toast', params: (args) => ({ nodeids: [args.id], title: (args.title ? args.title : 'MeshCentral'), msg: args.msg }) },
         format: () => 'Toast notification sent to the device.',
@@ -2000,11 +2750,21 @@ const commands = [
         family: 'admin',
         args: [
             { name: 'id', type: 'string', required: true, description: 'Identifier to add: user//... adds a user account, mesh//... adds a device group, node//... adds a device.' },
+            { name: 'userid', type: 'string', required: false, description: 'User account id to add, the legacy alternative to a user// id.' },
+            { name: 'meshid', type: 'string', required: false, description: 'Device group id to add, the legacy alternative to a mesh// id.' },
+            { name: 'nodeid', type: 'string', required: false, description: 'Device id to add, the legacy alternative to a node// id.' },
             { name: 'groupid', type: 'string', required: true, description: 'User group id (ugrp//...).' },
             { name: 'rights', type: 'number', required: false, description: 'Rights granted for a device group or device, as a number such as 4294967295 for full administrator.' }
         ],
         auth: { user: true, rights: ['usergroups'] },
-        cli: { name: 'addtousergroup' },
+        cli: {
+            name: 'addtousergroup',
+            format: formatActionResult,
+            checks: [
+                { arg: 'groupid', message: "Group id missing, use --groupid '[id]'" },
+                { test: (args) => (args.id != null) || (args.userid != null) || (args.meshid != null) || (args.nodeid != null), message: 'Missing identifier to add, use --id [id]' }
+            ]
+        },
         mcp: { name: 'mesh_add_to_user_group' },
         protocol: {
             action: (args) => membershipAction(args, true),
@@ -2019,10 +2779,20 @@ const commands = [
         family: 'admin',
         args: [
             { name: 'id', type: 'string', required: true, description: 'Identifier to remove: user//..., mesh//... or node//....' },
+            { name: 'userid', type: 'string', required: false, description: 'User account id to remove, the legacy alternative to a user// id.' },
+            { name: 'meshid', type: 'string', required: false, description: 'Device group id to remove, the legacy alternative to a mesh// id.' },
+            { name: 'nodeid', type: 'string', required: false, description: 'Device id to remove, the legacy alternative to a node// id.' },
             { name: 'groupid', type: 'string', required: true, description: 'User group id (ugrp//...).' }
         ],
         auth: { user: true, rights: ['usergroups'] },
-        cli: { name: 'removefromusergroup' },
+        cli: {
+            name: 'removefromusergroup',
+            format: formatActionResult,
+            checks: [
+                { arg: 'groupid', message: "Group id missing, use --groupid '[id]'" },
+                { test: (args) => (args.id != null) || (args.userid != null) || (args.meshid != null) || (args.nodeid != null), message: 'Missing identifier to remove, use --id [id]' }
+            ]
+        },
         mcp: { name: 'mesh_remove_from_user_group' },
         protocol: {
             action: (args) => membershipAction(args, false),
@@ -2040,7 +2810,13 @@ const commands = [
             { name: 'domain', type: 'string', required: false, description: 'User group domain, only for cross-domain administrators.' }
         ],
         auth: { user: true, rights: ['usergroups'] },
-        cli: { name: 'removeallusersfromusergroup' },
+        cli: {
+            name: 'removeallusersfromusergroup',
+            format: formatRemoveAllUsersFromUserGroup,
+            checks: [
+                { arg: 'groupid', message: "Group id missing, use --groupid '[id]'" }
+            ]
+        },
         mcp: { name: 'mesh_remove_all_users_from_user_group' },
         protocol: [
             {
@@ -2078,7 +2854,15 @@ const commands = [
             { name: 'port', type: 'number', required: false, description: 'Alternative http or https port, default 80 for http and 443 for https.' }
         ],
         auth: { user: true, rights: ['guestsharing'] },
-        cli: { name: 'devicesharing' },
+        cli: {
+            name: 'devicesharing',
+            format: cliDeviceShares,
+            checks: [
+                { arg: 'id', message: "Missing device id, use --id '[deviceid]'" },
+                { test: (argv) => !((argv.daily != null) && (argv.weekly != null)), message: "Can't specify both --daily and --weekly at the same time." },
+                { test: (argv) => (argv.add == null) || (argv.add.length > 0), message: 'Invalid guest name.' }
+            ]
+        },
         mcp: { name: 'mesh_device_sharing' },
         protocol: {
             action: (args) => shareRequest(args).action,
@@ -2103,7 +2887,13 @@ const commands = [
             { name: 'amtreset', type: 'boolean', required: false, description: 'Reset through Intel AMT.' }
         ],
         auth: { user: true, rights: ['wakedevice', 'resetoff'] },
-        cli: { name: 'devicepower' },
+        cli: {
+            name: 'devicepower',
+            format: cliPowerAction,
+            checks: [
+                { arg: 'id', message: "Missing device id, use --id '[deviceid]'" }
+            ]
+        },
         mcp: { name: 'mesh_device_power' },
         protocol: {
             action: (args) => powerRequest(args).action,
@@ -2119,7 +2909,7 @@ const commands = [
         family: 'local',
         args: [],
         auth: { user: true, rights: [] },
-        cli: { name: 'indexagenterrorlog' },
+        cli: { name: 'indexagenterrorlog', format: cliAgentErrorLog },
         mcp: { name: 'mesh_index_agent_error_log' },
         protocol: { local: () => readAgentErrorLog() },
         format: formatAgentErrorLog,
@@ -2135,7 +2925,19 @@ const commands = [
             { name: 'installflags', type: 'number', required: false, description: 'Installer flags 0 to 2: 0 interactive and background, 1 interactive only, 2 background only.' }
         ],
         auth: { user: true, rights: ['agentdownload'] },
-        cli: { name: 'agentdownload' },
+        cli: {
+            name: 'agentdownload',
+            format: formatAgentDownload,
+            checks: [
+                { arg: 'type', message: 'Missing device type, use --type [agenttype]' },
+                {
+                    test: (argv) => (parseInt(argv.type) != null) && !isNaN(parseInt(argv.type)) && (parseInt(argv.type) >= 1) && (parseInt(argv.type) <= 11000),
+                    message: 'Invalid agent type, must be a number.'
+                },
+                { arg: 'id', message: "Missing device id, use --id '[meshid]'" },
+                { test: (argv) => (typeof argv.id == 'string') && (argv.id.length == 64), message: 'Invalid meshid.' }
+            ]
+        },
         mcp: { name: 'mesh_agent_download' },
         protocol: { method: 'downloadAgent', params: (args) => agentDownloadParams(args) },
         format: formatAgentDownload,
@@ -2154,7 +2956,13 @@ const commands = [
             { name: 'showtraffic', type: 'boolean', required: false, description: 'Add traffic columns to a sessions report.' }
         ],
         auth: { user: true, rights: [] },
-        cli: { name: 'report' },
+        cli: {
+            name: 'report',
+            format: formatReport,
+            checks: [
+                { arg: 'type', message: "Missing report type, use --type '[reporttype]'" }
+            ]
+        },
         mcp: { name: 'mesh_report' },
         protocol: {
             action: 'report',
@@ -2199,7 +3007,14 @@ const commands = [
             { name: 'title', type: 'string', required: false, description: 'Toast title, default "MeshCentral".' }
         ],
         auth: { user: true, rights: ['remotecontrol'] },
-        cli: { name: 'grouptoast' },
+        cli: {
+            name: 'grouptoast',
+            format: cliGroupToast,
+            checks: [
+                { arg: 'id', message: "Missing device group id, use --id '[devicegroupid]'" },
+                { arg: 'msg', message: 'Remote message, use --msg "[message]" specify a remote message.' }
+            ]
+        },
         mcp: { name: 'mesh_group_toast' },
         protocol: [
             {
@@ -2232,7 +3047,14 @@ const commands = [
             { name: 'timeout', type: 'number', required: false, description: 'Milliseconds before the message box vanishes; the CLI default is 120000.' }
         ],
         auth: { user: true, rights: ['remotecontrol'] },
-        cli: { name: 'groupmessage' },
+        cli: {
+            name: 'groupmessage',
+            format: cliGroupMessage,
+            checks: [
+                { arg: 'id', message: "Missing device group id, use --id '[devicegroupid]'" },
+                { arg: 'msg', message: 'Remote message, use --msg "[message]" specify a remote message.' }
+            ]
+        },
         mcp: { name: 'mesh_group_message' },
         protocol: [
             {
@@ -2263,7 +3085,14 @@ const commands = [
             { name: 'port', type: 'number', required: false, description: 'Alternative port, default 80 for http and 443 for https.' }
         ],
         auth: { user: true, rights: ['remotecontrol'] },
-        cli: { name: 'webrelay' },
+        cli: {
+            name: 'webrelay',
+            format: cliWebRelay,
+            checks: [
+                { arg: 'id', message: "Missing device id, use --id '[deviceid]'" },
+                { arg: 'type', message: 'Missing protocol type, use --type [http,https]' }
+            ]
+        },
         mcp: { name: 'mesh_web_relay' },
         protocol: { action: 'webrelay', params: (args) => webRelayParams(args) },
         format: formatWebRelay,

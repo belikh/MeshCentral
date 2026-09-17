@@ -25,6 +25,7 @@
 const { z } = require('zod');
 const { textResult } = require('./mcp-tool-registry.js');
 const catalogue = require('./command-catalogue.js');
+const { executeProtocol } = require('./protocol-executor.js');
 
 /** Build the validation schema for one declared catalogue argument. */
 function argumentSchema(arg) {
@@ -49,91 +50,6 @@ function inputSchemaFor(entry) {
     const shape = {};
     for (const arg of entry.args) { shape[arg.name] = argumentSchema(arg); }
     return shape;
-}
-
-/** True when a response carries a server result other than success. */
-function isServerError(response) {
-    return (response.result != null) && (response.result !== 'ok') && (response.result !== 'OK');
-}
-
-/**
-* Execute the protocol mapping declared by a catalogue entry against a client.
-* Resolves with the response (single request), the ordered response array
-* (several requests) or the handshake value (from). Optional requests that
-* fail resolve to null so commands can report partial data. Every other
-* server error is thrown verbatim.
-*
-* Protocol forms that do not travel as a control request:
-*   { local: (args) => value }               run on the bridge host, no client
-*   { method, params?(args) }                call a client method
-*
-* A request spec may declare:
-*   action: (args) => name    pick the action per call (power, sharing)
-*   matchAction: true         the server quotes no responseid; match by action
-*                             (a function of args selects it per call)
-*   byAction: true            the server response does not echo the responseid
-*                             and must be correlated on its action instead
-*                             (login tokens, reports)
-*   follow: (response, args) => spec[]    requests derived from a response,
-*                             such as one membership removal per user in a
-*                             user group; their responses append to the
-*                             ordered response array
-*   resultValue: true         the response's result field is the command's
-*                             value, not an error; the format must surface any
-*                             server rejection it can recognise
-*/
-async function executeProtocol(client, entry, args) {
-    const protocol = entry.protocol;
-    if (protocol == null) { throw new Error('The ' + entry.name + ' command has no protocol mapping.'); }
-
-    if (!Array.isArray(protocol)) {
-        if (protocol.local != null) { return protocol.local(args); }
-        if (protocol.method != null) {
-            const method = String(protocol.method);
-            if (typeof client[method] !== 'function') {
-                throw new Error('The MeshCentral client does not provide the ' + method + ' method required by the ' + entry.name + ' command.');
-            }
-            return client[method]((protocol.params != null) ? protocol.params(args) : {});
-        }
-        if (protocol.from != null) {
-            const value = client[protocol.from];
-            if (value == null) { throw new Error('No ' + protocol.from + ' is available from the connection handshake.'); }
-            return value;
-        }
-    }
-
-    const specs = Array.isArray(protocol) ? protocol : [protocol];
-    const responses = [];
-    const run = async (spec) => {
-        const action = (typeof spec.action === 'function') ? spec.action(args) : spec.action;
-        const params = (spec.params != null) ? spec.params(args) : {};
-        const matchAction = (typeof spec.matchAction === 'function') ? (spec.matchAction(args) === true) : (spec.matchAction === true);
-        let response = null;
-        try {
-            if (spec.byAction === true) {
-                response = await client.requestByAction(action, params);
-            } else {
-                response = await client.request(action, params, matchAction ? { matchAction: true } : undefined);
-            }
-        } catch (error) {
-            if (spec.optional) { responses.push(null); return; }
-            throw error;
-        }
-        if (response == null) {
-            if (spec.optional) { responses.push(null); return; }
-            throw new Error('The MeshCentral server returned no response for the ' + action + ' action.');
-        }
-        if ((spec.resultValue !== true) && isServerError(response)) {
-            if (spec.optional) { responses.push(null); return; }
-            throw new Error(String(response.result));
-        }
-        responses.push(response);
-        if (typeof spec.follow === 'function') {
-            for (const followed of (spec.follow(response, args) || [])) { await run(followed); }
-        }
-    };
-    for (const spec of specs) { await run(spec); }
-    return Array.isArray(protocol) ? responses : responses[0];
 }
 
 /**

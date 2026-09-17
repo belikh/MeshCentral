@@ -1,21 +1,22 @@
 'use strict';
 
 /**
- * Tests for the shared command catalogue: declaration shape, CLI parity and
- * the mapping onto the MCP tool surface.
+ * Tests for the shared command catalogue: declaration shape, the CLI
+ * generation promise and the mapping onto the MCP tool surface.
  *
  * meshctrl.js executes on require (it parses process.argv and may exit), so the
- * CLI is exercised as a subprocess and inspected as source text, never
- * imported. All fixtures and commands are sanitised.
+ * CLI is exercised as a subprocess, never imported. The generated dispatch and
+ * the requests it sends are pinned by cli-catalogue-parity.test.js; this file
+ * guards the declarations themselves and the exception list.
  */
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const catalogue = require('../command-catalogue.js');
+const cliDispatch = require('../cli-dispatch.js');
 
 const MESHCTRL = path.join(__dirname, '..', 'meshctrl.js');
 const FAMILIES = ['inspection', 'device', 'admin', 'local'];
@@ -41,14 +42,15 @@ test('requiring the catalogue has no side effects', () => {
     assert.equal(result.stderr, '');
 });
 
-test('the CLI command list is rendered from the catalogue, same names and order', () => {
-    assert.deepEqual(catalogue.commandNames(), cliCommandList());
+test('requiring the CLI dispatch has no side effects', () => {
+    const result = spawnSync(process.execPath, ['-e', 'require(' + JSON.stringify(require.resolve('../cli-dispatch.js')) + ')'], { encoding: 'utf8' });
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, '');
 });
 
-test('meshctrl imports the catalogue instead of hard coding the command list', () => {
-    const source = fs.readFileSync(MESHCTRL, 'utf8');
-    assert.match(source, /require\('\.\/command-catalogue\.js'\)/);
-    assert.doesNotMatch(source, /possibleCommands = \['/);
+test('the CLI command list is rendered from the catalogue, same names and order', () => {
+    assert.deepEqual(catalogue.commandNames(), cliCommandList());
 });
 
 test('command names are unique and commandNames returns a copy', () => {
@@ -91,20 +93,31 @@ test('every covered command declares arguments, auth metadata, a protocol mappin
     }
 });
 
-test('every catalogue command has a dispatch case in meshctrl.js', () => {
-    const source = fs.readFileSync(MESHCTRL, 'utf8');
+test('every catalogue command is generated from its entry or an enumerated exception', () => {
     for (const entry of catalogue.commands) {
-        assert.ok(source.includes("case '" + entry.name + "'"), 'meshctrl has a case for ' + entry.name);
+        if (entry.protocol == null) {
+            assert.equal(entry.omitted, true, entry.name + ' without a protocol must be marked omitted');
+            continue;
+        }
+        const generated = cliDispatch.isGenerated(entry);
+        const exception = cliDispatch.CLI_EXCEPTIONS[entry.name];
+        assert.ok(generated || (exception != null), entry.name + ' is neither generated nor an enumerated CLI exception');
+        assert.equal(generated && (exception != null), false, entry.name + ' cannot be generated and an exception');
     }
 });
 
-test('every tool argument maps to a flag the CLI reads', () => {
-    const source = fs.readFileSync(MESHCTRL, 'utf8');
-    for (const entry of catalogue.mcpCommands()) {
-        for (const arg of entry.args) {
-            const flag = (arg.cli != null) ? arg.cli : arg.name;
-            assert.ok(source.includes('args.' + flag), entry.name + ' uses args.' + flag);
-        }
+test('the exception list holds real commands, each with a reason, and no generated command', () => {
+    for (const name of Object.keys(cliDispatch.CLI_EXCEPTIONS)) {
+        const entry = catalogue.byName(name);
+        assert.ok(entry != null, name + ' names a catalogue command');
+        assert.equal(cliDispatch.isGenerated(entry), false, name + ' is not generated');
+        assert.ok(cliDispatch.CLI_EXCEPTIONS[name].length > 20, name + ' has a documented reason');
+    }
+});
+
+test('every generated command declares a CLI formatter', () => {
+    for (const entry of cliDispatch.generatedCommands()) {
+        assert.equal(typeof entry.cli.format, 'function', entry.name + ' cli.format');
     }
 });
 
