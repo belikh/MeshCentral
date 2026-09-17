@@ -158,6 +158,39 @@ test('mesh_desktop_snapshot maps image type, quality and scale into the capture 
     assert.match(result.content[1].text, /format image\/png/);
 });
 
+test('configured desktop defaults are applied to a launched session', async () => {
+    const state = { frame: jpegFrame({ format: 'png', mimeType: 'image/png', imageType: 2 }) };
+    const fakes = createFakes(state);
+    const records = [];
+    const registry = createToolRegistry({ onInvocation: (record) => records.push(record) });
+    registerDesktopTools(registry, {
+        client: fakes.client,
+        createCapture: fakes.factory,
+        defaults: { imageType: 'png', quality: 70, scale: 800 }
+    });
+
+    const result = await registry.call('mesh_desktop_snapshot', { deviceid: NODE_ID });
+
+    assert.deepEqual(fakes.launches[0].options, { imageType: 2, compression: 70, scaling: 800 });
+    assert.deepEqual(fakes.captures[0].config, { url: RELAY_URL, imageType: 2, compression: 70, scaling: 800 });
+    assert.equal(result.content[0].mimeType, 'image/png');
+});
+
+test('explicit tool arguments override the configured desktop defaults', async () => {
+    const state = { frame: jpegFrame() };
+    const fakes = createFakes(state);
+    const registry = createToolRegistry();
+    registerDesktopTools(registry, {
+        client: fakes.client,
+        createCapture: fakes.factory,
+        defaults: { imageType: 'png', quality: 70, scale: 800 }
+    });
+
+    await registry.call('mesh_desktop_snapshot', { deviceid: NODE_ID, imageType: 'jpeg', quality: 90, scale: 320 });
+
+    assert.deepEqual(fakes.launches[0].options, { imageType: 1, compression: 90, scaling: 320 });
+});
+
 test('mesh_desktop_snapshot surfaces a relay launch denial verbatim', async () => {
     const message = 'Unable to launch a desktop relay session for ' + NODE_ID + ': Access denied: missing device group rights';
     const { registry, records, captures } = createHarness({

@@ -24,11 +24,17 @@ const { MeshCentralClient, ConfigurationError } = require('./meshcentral-client.
 const { createToolRegistry } = require('./mcp-tool-registry.js');
 const { registerMeshTools } = require('./mcp-tools.js');
 const { registerDesktopTools } = require('./mcp-desktop-tools.js');
-const packageJson = require('./package.json');
+const { BRIDGE_VERSION, TOOL_SCHEMA_VERSION } = require('./mcp-version.js');
 
 const SERVER_NAME = 'meshcentral-mcp';
 const DEFAULT_COMMAND_TIMEOUT = 30000;
 const DEFAULT_CONNECT_TIMEOUT = 30000;
+const DEFAULT_IMAGE_TYPE = 'jpeg';
+const IMAGE_TYPE_NAMES = ['jpeg', 'png', 'tiff', 'webp'];
+const MIN_QUALITY = 0;
+const MAX_QUALITY = 100;
+const MIN_SCALE = 1;
+const MAX_SCALE = 65535;
 const CREDENTIAL_QUERY = /([?&](?:key|auth|token|password)=)[^&\s"']*/gi;
 
 /** Remove credential values from any text bound for stderr or an audit record. */
@@ -61,11 +67,40 @@ function copyTimeout(config, key, flag, flagValue, envValue) {
     config[key] = milliseconds;
 }
 
+function copyImageType(config, key, flag, flagValue, envValue) {
+    const value = (flagValue !== undefined) ? flagValue : envValue;
+    if (value == null) { return; }
+    if (value === true) {
+        throw new ConfigurationError('The --' + flag + ' flag requires a value; one of ' + IMAGE_TYPE_NAMES.join(', ') + '.', 'EINVALIDCONFIG');
+    }
+    const name = String(value).toLowerCase();
+    if (IMAGE_TYPE_NAMES.indexOf(name) < 0) {
+        throw new ConfigurationError('Invalid --' + flag + ' value "' + value + '": expected one of ' + IMAGE_TYPE_NAMES.join(', ') + '.', 'EINVALIDCONFIG');
+    }
+    config[key] = name;
+}
+
+function copyBoundedInteger(config, key, flag, flagValue, envValue, minimum, maximum) {
+    const value = (flagValue !== undefined) ? flagValue : envValue;
+    if (value == null) { return; }
+    if (value === true) {
+        throw new ConfigurationError('The --' + flag + ' flag requires a value between ' + minimum + ' and ' + maximum + '.', 'EINVALIDCONFIG');
+    }
+    const number = Number(value);
+    if (!Number.isInteger(number) || (number < minimum) || (number > maximum)) {
+        throw new ConfigurationError('Invalid --' + flag + ' value "' + value + '": expected an integer between ' + minimum + ' and ' + maximum + '.', 'EINVALIDCONFIG');
+    }
+    config[key] = number;
+}
+
 /**
 * Build MeshCentral client options from CLI flags with environment fallbacks.
 * Flags win over environment values. Returns { help, version, config }; the
 * config only carries explicitly configured options, so client defaults apply
-* to everything else. Throws ConfigurationError for invalid values.
+* to everything else. Desktop capture defaults (defaultImageType,
+* defaultQuality, defaultScale) ride in the same config and are applied by the
+* desktop tools when a session is opened without the matching tool argument.
+* Throws ConfigurationError for invalid values.
 */
 function parseConfig(argv, env) {
     argv = argv || [];
@@ -86,6 +121,9 @@ function parseConfig(argv, env) {
     copyString(config, 'proxy', args.proxy, env.MESHCENTRAL_PROXY);
     copyTimeout(config, 'commandTimeout', 'commandtimeout', args.commandtimeout, env.MESHCENTRAL_COMMAND_TIMEOUT);
     copyTimeout(config, 'connectTimeout', 'connecttimeout', args.connecttimeout, env.MESHCENTRAL_CONNECT_TIMEOUT);
+    copyImageType(config, 'defaultImageType', 'desktopimagetype', args.desktopimagetype, env.MESHCENTRAL_DESKTOP_IMAGETYPE);
+    copyBoundedInteger(config, 'defaultQuality', 'desktopquality', args.desktopquality, env.MESHCENTRAL_DESKTOP_QUALITY, MIN_QUALITY, MAX_QUALITY);
+    copyBoundedInteger(config, 'defaultScale', 'desktopscale', args.desktopscale, env.MESHCENTRAL_DESKTOP_SCALE, MIN_SCALE, MAX_SCALE);
 
     return { help: args.help === true, version: args.version === true, config: config };
 }
@@ -145,7 +183,10 @@ function createMcpServer(options) {
     registerMeshTools(registry, { client: client });
     if (typeof options.registerTools === 'function') { options.registerTools(registry, { client: client }); }
 
-    const mcp = new McpServer({ name: SERVER_NAME, version: options.version || packageJson.version });
+    const mcp = new McpServer(
+        { name: SERVER_NAME, version: options.version || BRIDGE_VERSION },
+        { instructions: SERVER_NAME + ' ' + (options.version || BRIDGE_VERSION) + ' (tool schema ' + TOOL_SCHEMA_VERSION + ')' }
+    );
     for (const tool of registry.list()) {
         mcp.registerTool(tool.name, { description: tool.description, inputSchema: tool.inputSchema }, (args) => registry.call(tool.name, args));
     }
@@ -157,6 +198,11 @@ function createMcpServer(options) {
         connect: (transport) => mcp.connect(transport || new StdioServerTransport()),
         close: () => mcp.close()
     };
+}
+
+/** The version surface: bridge version plus the MCP tool schema version. */
+function versionText() {
+    return SERVER_NAME + ' ' + BRIDGE_VERSION + ' (tool schema ' + TOOL_SCHEMA_VERSION + ')';
 }
 
 function usageText() {
@@ -177,8 +223,11 @@ function usageText() {
         '  --proxy [http://proxy:123]  HTTP proxy (env MESHCENTRAL_PROXY)',
         '  --commandtimeout [ms]       Per-command timeout, default ' + DEFAULT_COMMAND_TIMEOUT + ' (env MESHCENTRAL_COMMAND_TIMEOUT)',
         '  --connecttimeout [ms]       Connection timeout, default ' + DEFAULT_CONNECT_TIMEOUT + ' (env MESHCENTRAL_CONNECT_TIMEOUT)',
+        '  --desktopimagetype [jpeg|png|tiff|webp]  Desktop capture image type, default ' + DEFAULT_IMAGE_TYPE + ' (env MESHCENTRAL_DESKTOP_IMAGETYPE)',
+        '  --desktopquality [0-100]    Desktop capture compression level, default 50 (env MESHCENTRAL_DESKTOP_QUALITY)',
+        '  --desktopscale [pixels]     Desktop capture maximum frame width, default 1024 (env MESHCENTRAL_DESKTOP_SCALE)',
         '  --help                      Show this help',
-        '  --version                   Show the bridge version',
+        '  --version                   Show the bridge and tool schema versions',
         ''
     ].join('\n');
 }
@@ -191,7 +240,7 @@ async function main(argv, env, io) {
     const stderr = ((io != null) && (io.stderr != null)) ? io.stderr : process.stderr;
     const options = parseConfig(argv, env);
     if (options.help) { stderr.write(usageText()); return 0; }
-    if (options.version) { stderr.write(packageJson.version + '\n'); return 0; }
+    if (options.version) { stderr.write(versionText() + '\n'); return 0; }
 
     let client = null;
     try {
@@ -205,7 +254,14 @@ async function main(argv, env, io) {
 
     const server = createMcpServer({
         client: client,
-        registerTools: (registry, context) => registerDesktopTools(registry, { client: context.client })
+        registerTools: (registry, context) => registerDesktopTools(registry, {
+            client: context.client,
+            defaults: {
+                imageType: options.config.defaultImageType,
+                quality: options.config.defaultQuality,
+                scale: options.config.defaultScale
+            }
+        })
     });
     try {
         await server.connect(new StdioServerTransport());
@@ -243,6 +299,7 @@ module.exports = {
     parseConfig: parseConfig,
     createAuditLog: createAuditLog,
     createMcpServer: createMcpServer,
+    versionText: versionText,
     usageText: usageText,
     redact: redact,
     main: main

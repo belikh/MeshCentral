@@ -258,6 +258,41 @@ test('poll passes image type, quality and scale into a freshly negotiated sessio
     assert.match(result.content[1].text, /format image\/png/);
 });
 
+test('a freshly negotiated session uses the configured desktop defaults', async () => {
+    const state = { frame: jpegFrame({ format: 'webp', mimeType: 'image/webp', imageType: 4 }) };
+    const fakes = createFakes(state);
+    const cache = createDesktopSessionCache({ client: fakes.client, createCapture: fakes.factory, lifecycle: null });
+    const registry = createToolRegistry();
+    registerDesktopTools(registry, {
+        client: fakes.client,
+        createCapture: fakes.factory,
+        cache: cache,
+        defaults: { imageType: 'webp', quality: 60, scale: 640 }
+    });
+
+    const result = await registry.call('mesh_desktop_frames', { deviceid: NODE_ID, mode: 'poll' });
+
+    assert.deepEqual(fakes.launches[0].options, { imageType: 4, compression: 60, scaling: 640 });
+    assert.deepEqual(fakes.captures[0].config, { url: RELAY_URL, imageType: 4, compression: 60, scaling: 640 });
+    assert.equal(result.content[0].mimeType, 'image/webp');
+});
+
+test('explicit poll arguments override the configured desktop defaults', async () => {
+    const fakes = createFakes();
+    const cache = createDesktopSessionCache({ client: fakes.client, createCapture: fakes.factory, lifecycle: null });
+    const registry = createToolRegistry();
+    registerDesktopTools(registry, {
+        client: fakes.client,
+        createCapture: fakes.factory,
+        cache: cache,
+        defaults: { imageType: 'webp', quality: 60, scale: 640 }
+    });
+
+    await registry.call('mesh_desktop_frames', { deviceid: NODE_ID, mode: 'poll', imageType: 'jpeg', quality: 20, scale: 320 });
+
+    assert.deepEqual(fakes.launches[0].options, { imageType: 1, compression: 20, scaling: 320 });
+});
+
 test('a failed poll releases the session, evicts the entry and the next poll renegotiates', async () => {
     const state = {
         frameError: new DesktopCaptureError('The desktop relay connection closed unexpectedly', 'E_CLOSED', { serverMessage: 'Consent declined by user' })

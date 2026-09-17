@@ -450,6 +450,21 @@ test('mesh_desktop_input validates its arguments through the registry', async ()
     assert.deepEqual(records.map((record) => record.outcome), cases.map(() => 'denied'));
 });
 
+test('a launched input session uses the configured desktop defaults', async () => {
+    const { registry, launches, captures } = createHarness({ waitFrame: FRAME_1024 }, {
+        defaults: { imageType: 'webp', quality: 60, scale: 640 }
+    });
+
+    const result = await registry.call('mesh_desktop_input', {
+        deviceid: NODE_ID,
+        actions: [{ type: 'move', x: 10, y: 20 }]
+    });
+
+    assert.equal(result.isError, undefined);
+    assert.deepEqual(launches[0].options, { imageType: 4, compression: 60, scaling: 640 });
+    assert.deepEqual(captures[0].config, { url: RELAY_URL, imageType: 4, compression: 60, scaling: 640 });
+});
+
 test('the mesh_desktop_input declaration has no credential arguments and a device id target', () => {
     const { registry } = createHarness();
 

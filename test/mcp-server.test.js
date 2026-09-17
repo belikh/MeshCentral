@@ -14,10 +14,12 @@ const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 const { WebSocketServer } = require('ws');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+const { InMemoryTransport } = require('@modelcontextprotocol/sdk/inMemory.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
 
-const { parseConfig, createAuditLog, createMcpServer, main } = require('../mcp-server.js');
+const { parseConfig, createAuditLog, createMcpServer, main, usageText } = require('../mcp-server.js');
 const { ConfigurationError } = require('../meshcentral-client.js');
+const { BRIDGE_VERSION, TOOL_SCHEMA_VERSION } = require('../mcp-version.js');
 const packageJson = require('../package.json');
 
 const SERVER_PATH = path.join(__dirname, '..', 'mcp-server.js');
@@ -154,6 +156,72 @@ test('parseConfig rejects a password flag with no value instead of prompting', (
     });
 });
 
+test('parseConfig carries desktop capture defaults with flags over environment', () => {
+    const options = parseConfig([
+        '--desktopimagetype', 'png',
+        '--desktopquality', '70',
+        '--desktopscale', '1280'
+    ], {
+        MESHCENTRAL_DESKTOP_IMAGETYPE: 'webp',
+        MESHCENTRAL_DESKTOP_QUALITY: '10',
+        MESHCENTRAL_DESKTOP_SCALE: '640'
+    });
+
+    assert.deepEqual(options.config, {
+        defaultImageType: 'png',
+        defaultQuality: 70,
+        defaultScale: 1280
+    });
+});
+
+test('parseConfig falls back to the desktop environment values', () => {
+    const options = parseConfig([], {
+        MESHCENTRAL_DESKTOP_IMAGETYPE: 'tiff',
+        MESHCENTRAL_DESKTOP_QUALITY: '0',
+        MESHCENTRAL_DESKTOP_SCALE: '2000'
+    });
+
+    assert.deepEqual(options.config, {
+        defaultImageType: 'tiff',
+        defaultQuality: 0,
+        defaultScale: 2000
+    });
+});
+
+test('parseConfig leaves desktop defaults unset when nothing is configured', () => {
+    const options = parseConfig([], {});
+    assert.deepEqual(options.config, {});
+});
+
+test('parseConfig rejects invalid desktop capture defaults with actionable messages', () => {
+    for (const args of [
+        ['--desktopimagetype', 'bmp'],
+        ['--desktopquality', '101'],
+        ['--desktopquality', '-1'],
+        ['--desktopquality', 'half'],
+        ['--desktopscale', '0'],
+        ['--desktopscale', '1.5'],
+        ['--desktopimagetype'],
+        ['--desktopquality'],
+        ['--desktopscale']
+    ]) {
+        assert.throws(() => parseConfig(args, {}), (err) => {
+            assert.ok(err instanceof ConfigurationError);
+            assert.match(err.message, new RegExp(args[0]));
+            return true;
+        });
+    }
+});
+
+test('usageText documents the desktop capture defaults and their environment', () => {
+    const text = usageText();
+
+    assert.match(text, /--desktopimagetype \[jpeg\|png\|tiff\|webp\]\s+Desktop capture image type, default jpeg \(env MESHCENTRAL_DESKTOP_IMAGETYPE\)/);
+    assert.match(text, /--desktopquality \[0-100\]\s+Desktop capture compression level, default 50 \(env MESHCENTRAL_DESKTOP_QUALITY\)/);
+    assert.match(text, /--desktopscale \[pixels\]\s+Desktop capture maximum frame width, default 1024 \(env MESHCENTRAL_DESKTOP_SCALE\)/);
+    assert.match(text, /--version\s+Show the bridge and tool schema versions/);
+});
+
 test('createAuditLog writes one JSON record with the required fields', () => {
     const stream = captureStream();
     const log = createAuditLog({ stream, now: () => new Date('2026-09-17T00:00:00.000Z') });
@@ -278,14 +346,34 @@ test('--help prints usage to stderr without touching stdout', { timeout: 15000 }
     assert.equal(result.stdout, '');
     assert.match(result.stderr, /Usage: meshcentral-mcp/);
     assert.match(result.stderr, /--connecttimeout/);
+    assert.match(result.stderr, /MESHCENTRAL_DESKTOP_SCALE/);
 });
 
-test('--version prints the package version to stderr without touching stdout', { timeout: 15000 }, async () => {
+test('--version prints the bridge and tool schema versions to stderr without touching stdout', { timeout: 15000 }, async () => {
     const result = await runChild(['--version'], 5000);
     assert.equal(result.timedOut, false);
     assert.equal(result.code, 0);
     assert.equal(result.stdout, '');
-    assert.equal(result.stderr, packageJson.version + '\n');
+    assert.equal(result.stderr, 'meshcentral-mcp ' + BRIDGE_VERSION + ' (tool schema ' + TOOL_SCHEMA_VERSION + ')\n');
+});
+
+test('the MCP server advertises the bridge version and the tool schema version', async (t) => {
+    const captured = [];
+    const server = createMcpServer({
+        client: { request: async () => ({ action: 'nodes', result: 'ok', nodes: {} }) },
+        audit: { record: (record) => captured.push(record) }
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test-client', version: '0.0.0' });
+    t.after(async () => { await client.close(); await server.close(); await clientTransport.close(); });
+
+    await Promise.all([server.mcp.connect(serverTransport), client.connect(clientTransport)]);
+
+    const advertised = client.getServerVersion();
+    assert.equal(advertised.name, 'meshcentral-mcp');
+    assert.equal(advertised.version, BRIDGE_VERSION);
+    assert.equal(typeof client.getInstructions(), 'string');
+    assert.match(client.getInstructions(), new RegExp('tool schema ' + TOOL_SCHEMA_VERSION.replace(/\./g, '\\.')));
 });
 
 test('an MCP client can launch the bridge over stdio, list tools and call mesh_list_devices', { timeout: 20000 }, async (t) => {
