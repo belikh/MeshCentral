@@ -14,6 +14,8 @@
 /*jshint esversion: 6 */
 "use strict";
 
+const agentSessions = require('./agent-session-registry.js');
+
 // Construct a MeshAgent object, called upon connection
 module.exports.CreateMeshAgent = function (parent, db, ws, req, args, domain) {
     const forge = parent.parent.certificateOperations.forge;
@@ -77,8 +79,7 @@ module.exports.CreateMeshAgent = function (parent, db, ws, req, args, domain) {
         if (obj.guestSharing === true) { removeGuestSharing(); }
 
         // Remove this agent from the webserver list
-        if (parent.wsagents[obj.dbNodeKey] == obj) {
-            delete parent.wsagents[obj.dbNodeKey];
+        if (agentSessions.detachSession(parent.wsagents, obj.dbNodeKey, obj)) {
             parent.parent.ClearConnectivityState(obj.dbMeshKey, obj.dbNodeKey, 1, null, { remoteaddrport: obj.remoteaddrport, name: obj.name });
         }
 
@@ -887,33 +888,34 @@ module.exports.CreateMeshAgent = function (parent, db, ws, req, args, domain) {
     }
 
     function completeAgentConnection3(device, mesh) {
-        // Check if this agent is already connected
-        const dupAgent = parent.wsagents[obj.dbNodeKey];
-        parent.wsagents[obj.dbNodeKey] = obj;
-        if (dupAgent) {
-            // Record duplicate agents
-            if (parent.duplicateAgentsLog[obj.dbNodeKey] == null) {
-                if (dupAgent.remoteaddr == obj.remoteaddr) {
-                    parent.duplicateAgentsLog[obj.dbNodeKey] = { name: device.name, group: mesh.name, ip: [obj.remoteaddr], count: 1 };
+        // Take over the node's session, closing any duplicate and re-affirming connectivity
+        agentSessions.completeSession(parent.wsagents, obj.dbNodeKey, obj, {
+            onSuperseded: function (dupAgent) {
+                // Record duplicate agents
+                if (parent.duplicateAgentsLog[obj.dbNodeKey] == null) {
+                    if (dupAgent.remoteaddr == obj.remoteaddr) {
+                        parent.duplicateAgentsLog[obj.dbNodeKey] = { name: device.name, group: mesh.name, ip: [obj.remoteaddr], count: 1 };
+                    } else {
+                        parent.duplicateAgentsLog[obj.dbNodeKey] = { name: device.name, group: mesh.name, ip: [obj.remoteaddr, dupAgent.remoteaddr], count: 1 };
+                    }
                 } else {
-                    parent.duplicateAgentsLog[obj.dbNodeKey] = { name: device.name, group: mesh.name, ip: [obj.remoteaddr, dupAgent.remoteaddr], count: 1 };
+                    parent.duplicateAgentsLog[obj.dbNodeKey].name = device.name;
+                    parent.duplicateAgentsLog[obj.dbNodeKey].group = mesh.name;
+                    parent.duplicateAgentsLog[obj.dbNodeKey].count++;
+                    if (parent.duplicateAgentsLog[obj.dbNodeKey].ip.indexOf(obj.remoteaddr) == -1) { parent.duplicateAgentsLog[obj.dbNodeKey].ip.push(obj.remoteaddr); }
                 }
-            } else {
-                parent.duplicateAgentsLog[obj.dbNodeKey].name = device.name;
-                parent.duplicateAgentsLog[obj.dbNodeKey].group = mesh.name;
-                parent.duplicateAgentsLog[obj.dbNodeKey].count++;
-                if (parent.duplicateAgentsLog[obj.dbNodeKey].ip.indexOf(obj.remoteaddr) == -1) { parent.duplicateAgentsLog[obj.dbNodeKey].ip.push(obj.remoteaddr); }
-            }
 
-            // Close the duplicate agent
-            parent.agentStats.duplicateAgentCount++;
-            parent.setAgentIssue(obj, 'duplicateAgent');
-            if (obj.nodeid != null) { parent.parent.debug('agent', 'Duplicate agent ' + obj.nodeid + ' (' + obj.remoteaddrport + ')'); }
-            dupAgent.close(3);
-        } else {
-            // Indicate the agent is connected
-            parent.parent.SetConnectivityState(obj.dbMeshKey, obj.dbNodeKey, obj.connectTime, 1, 1, null, { remoteaddrport: obj.remoteaddrport, name: device.name });
-        }
+                // Close the duplicate agent
+                parent.agentStats.duplicateAgentCount++;
+                parent.setAgentIssue(obj, 'duplicateAgent');
+                if (obj.nodeid != null) { parent.parent.debug('agent', 'Duplicate agent ' + obj.nodeid + ' (' + obj.remoteaddrport + ')'); }
+                dupAgent.close(3);
+            },
+            setConnectivity: function () {
+                // Indicate the agent is connected
+                parent.parent.SetConnectivityState(obj.dbMeshKey, obj.dbNodeKey, obj.connectTime, 1, 1, null, { remoteaddrport: obj.remoteaddrport, name: device.name });
+            }
+        });
 
         // We are done, ready to communicate with this agent
         delete obj.pendingCompleteAgentConnection;
